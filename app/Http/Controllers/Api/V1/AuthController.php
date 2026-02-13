@@ -9,6 +9,7 @@ use App\Http\Resources\UserResource;
 use App\Models\User;
 use App\Support\ApiResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 
 class AuthController extends Controller
@@ -67,21 +68,28 @@ class AuthController extends Controller
 
     public function setCurrency(Request $request)
     {
-        $user = auth('api')->user();
-
-        if (!empty($user->currency)) {
-            return $this->fail('Currency already set', 409);
-        }
-
         $data = $request->validate([
             'currency' => ['required', 'in:TRY,SYP'],
         ]);
 
-        $user->currency = strtoupper($data['currency']);
-        $user->currency_selected_at = now();
-        $user->save();
+        $userId = auth('api')->id();
 
-        return $this->ok(new UserResource($user));
+        return DB::transaction(function () use ($userId, $data) {
+            $user = User::query()
+                ->whereKey($userId)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if (!empty($user->currency)) {
+                return $this->fail('Currency already set', 409);
+            }
+
+            $user->currency = strtoupper($data['currency']);
+            $user->currency_selected_at = now();
+            $user->save();
+
+            return $this->ok(new UserResource($user));
+        });
     }
 
     public function logout()
