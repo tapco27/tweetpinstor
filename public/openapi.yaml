@@ -1,0 +1,524 @@
+openapi: 3.0.3
+info:
+  title: B2C API (Laravel) - Test Swagger
+  version: "1.0.1"
+
+servers:
+  - url: "{baseUrl}/api"
+    variables:
+      baseUrl:
+        default: "http://localhost:8000"
+
+tags:
+  - name: Webhooks
+  - name: Auth
+  - name: Catalog
+  - name: Orders
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: Validation error
+        errors:
+          type: object
+          additionalProperties: true
+
+    User:
+      type: object
+      properties:
+        id: { type: integer, example: 12 }
+        name: { type: string, example: "Muhammed" }
+        email: { type: string, format: email, example: "user@example.com" }
+        currency:
+          type: string
+          enum: [TRY, SYP]
+          example: SYP
+
+    TokenResponse:
+      type: object
+      properties:
+        access_token: { type: string, example: "eyJhbGciOi..." }
+        token_type: { type: string, example: "Bearer" }
+        expires_in: { type: integer, example: 3600 }
+        user:
+          $ref: "#/components/schemas/User"
+
+    RegisterRequest:
+      type: object
+      required: [name, email, password, password_confirmation, currency]
+      properties:
+        name: { type: string, example: "Muhammed" }
+        email: { type: string, format: email, example: "user@example.com" }
+        password: { type: string, format: password, minLength: 8, example: "P@ssw0rd!" }
+        password_confirmation: { type: string, format: password, example: "P@ssw0rd!" }
+        currency:
+          type: string
+          enum: [TRY, SYP]
+          example: SYP
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, example: "user@example.com" }
+        password: { type: string, format: password, example: "P@ssw0rd!" }
+
+    CreateOrderRequest:
+      type: object
+      required: [product_id]
+      properties:
+        product_id: { type: integer, example: 1 }
+        package_id:
+          type: integer
+          nullable: true
+          example: 10
+        quantity:
+          type: integer
+          nullable: true
+          minimum: 1
+          example: 1
+        metadata:
+          type: object
+          nullable: true
+          additionalProperties: true
+          example:
+            user_identifier: "932456123"
+      description: >
+        ملاحظة: حسب نوع المنتج قد تحتاج package_id أو quantity (حسب منطق السيرفر).
+
+    ProductPackage:
+      type: object
+      required:
+        - id
+        - name_ar
+        - name_tr
+        - name_en
+        - price_minor
+        - display_price
+        - currency
+        - minor_unit
+        - is_popular
+        - sort_order
+      properties:
+        id: { type: integer, example: 10 }
+        name_ar: { type: string, example: "50,000 كريستال" }
+        name_tr: { type: string, example: "50.000 Crystal" }
+        name_en: { type: string, example: "50,000 Crystals" }
+        value_label:
+          type: string
+          nullable: true
+          example: "50000"
+        price_minor:
+          type: integer
+          example: 395000
+          description: السعر بالـ minor units
+        display_price:
+          type: string
+          example: "3950.00"
+        currency:
+          type: string
+          enum: [TRY, SYP]
+          example: TRY
+        minor_unit:
+          type: integer
+          example: 2
+        is_popular:
+          type: boolean
+          example: true
+        sort_order:
+          type: integer
+          example: 1
+
+    PriceFor:
+      type: object
+      required: [currency, minor_unit, packages]
+      properties:
+        currency:
+          type: string
+          enum: [TRY, SYP]
+          example: SYP
+        minor_unit:
+          type: integer
+          example: 0
+        packages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProductPackage"
+
+    Product:
+      type: object
+      required:
+        - id
+        - category_id
+        - product_type
+        - name_ar
+        - name_tr
+        - name_en
+        - description_ar
+        - description_tr
+        - description_en
+        - image_url
+        - is_featured
+        - price_for
+      properties:
+        id: { type: integer, example: 1 }
+        category_id: { type: integer, example: 1 }
+        product_type: { type: string, example: "fixed_package" }
+        name_ar: { type: string, example: "Soulchill - شحن كريستال" }
+        name_tr: { type: string, example: "Soulchill - Crystal Yükleme" }
+        name_en: { type: string, example: "Soulchill - Crystal Top Up" }
+        description_ar: { type: string, example: "شحن كريستال Soulchill بشكل سريع وآمن." }
+        description_tr: { type: string, example: "Soulchill Crystal hızlı ve güvenli yükleme." }
+        description_en: { type: string, example: "Fast and secure Soulchill crystal top up." }
+        image_url:
+          type: string
+          nullable: true
+          example: null
+        is_featured: { type: boolean, example: true }
+        price_for:
+          allOf:
+            - $ref: "#/components/schemas/PriceFor"
+          nullable: true
+
+    ProductPaginator:
+      type: object
+      required: [current_page, data]
+      properties:
+        current_page: { type: integer, example: 1 }
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Product"
+      additionalProperties: true
+
+paths:
+  /v1/webhooks/stripe:
+    post:
+      tags: [Webhooks]
+      summary: Stripe webhook (no auth)
+      operationId: stripeWebhookHandle
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register
+      operationId: authRegister
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      responses:
+        "201":
+          description: Registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenResponse" }
+        "422":
+          description: Validation error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login
+      operationId: authLogin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenResponse" }
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/me:
+    get:
+      tags: [Auth]
+      summary: Current user profile
+      operationId: authMe
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout
+      operationId: authLogout
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh token
+      operationId: authRefresh
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenResponse" }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/categories:
+    get:
+      tags: [Catalog]
+      summary: List categories
+      operationId: catalogCategories
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+
+  /v1/banners:
+    get:
+      tags: [Catalog]
+      summary: List banners
+      operationId: catalogBanners
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+
+  /v1/products:
+    get:
+      tags: [Catalog]
+      summary: List products (filtered by user currency)
+      operationId: catalogProducts
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: category_id
+          schema: { type: integer }
+        - in: query
+          name: search
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductPaginator" }
+
+  /v1/products/featured:
+    get:
+      tags: [Catalog]
+      summary: Featured products
+      operationId: catalogFeaturedProducts
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Product" }
+
+  /v1/products/{id}:
+    get:
+      tags: [Catalog]
+      summary: Get product by id
+      operationId: catalogProductById
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Product" }
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/orders:
+    get:
+      tags: [Orders]
+      summary: List orders
+      operationId: ordersIndex
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string }
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [current_page, data]
+                properties:
+                  current_page: { type: integer, example: 1 }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                additionalProperties: true
+
+    post:
+      tags: [Orders]
+      summary: Create order
+      operationId: ordersStore
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateOrderRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "422":
+          description: Validation error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/orders/{id}:
+    get:
+      tags: [Orders]
+      summary: Get order by id
+      operationId: ordersShow
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
