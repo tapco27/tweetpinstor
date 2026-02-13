@@ -7,6 +7,7 @@ use App\Http\Requests\Api\V1\RegisterRequest;
 use App\Http\Requests\Api\V1\LoginRequest;
 use App\Http\Resources\UserResource;
 use App\Models\User;
+use App\Models\Wallet;
 use App\Support\ApiResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -21,15 +22,25 @@ class AuthController extends Controller
      */
     public function register(RegisterRequest $request)
     {
-        $user = new User();
-        $user->name = $request->name;
-        $user->email = $request->email;
-        $user->password = Hash::make($request->password);
+        $user = DB::transaction(function () use ($request) {
+            $user = new User();
+            $user->name = $request->name;
+            $user->email = $request->email;
+            $user->password = Hash::make($request->password);
 
-        $user->currency = strtoupper($request->currency);
-        $user->currency_selected_at = now();
+            $user->currency = strtoupper($request->currency);
+            $user->currency_selected_at = now();
 
-        $user->save();
+            $user->save();
+
+            // إنشاء Wallet مباشرة بعد إنشاء المستخدم
+            $user->wallet()->create([
+                'currency' => $user->currency,
+                'balance_minor' => 0,
+            ]);
+
+            return $user;
+        });
 
         $token = auth('api')->login($user);
 
@@ -87,6 +98,12 @@ class AuthController extends Controller
             $user->currency = strtoupper($data['currency']);
             $user->currency_selected_at = now();
             $user->save();
+
+            // إنشاء Wallet إذا غير موجود
+            Wallet::firstOrCreate(
+                ['user_id' => $user->id],
+                ['currency' => $user->currency, 'balance_minor' => 0]
+            );
 
             return $this->ok(new UserResource($user));
         });

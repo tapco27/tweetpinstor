@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use RuntimeException;
 use Tymon\JWTAuth\Contracts\JWTSubject;
 use Spatie\Permission\Traits\HasRoles;
@@ -71,5 +72,10 @@ class User extends Authenticatable implements JWTSubject
             // إذا كانت العملة null سابقاً: اسمح بتعيينها + currency_selected_at
             // (لا ترمي أي استثناء)
         });
+    }
+
+    public function wallet(): HasOne
+    {
+        return $this->hasOne(\App\Models\Wallet::class);
     }
 }

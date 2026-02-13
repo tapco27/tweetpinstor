@@ -15,6 +15,7 @@ use App\Services\PricingService;
 use App\Services\StripeService;
 use App\Support\ApiResponse;
 use Dedoc\Scramble\Attributes\BodyParameter;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 class OrderController extends Controller
@@ -72,9 +73,10 @@ class OrderController extends Controller
             return $this->fail('Currency not set', 422);
         }
 
-        // Idempotency: إذا كان فيه Order بنفس order_uuid + user_id رجّع نفس الطلب
+        // Idempotency key
         $orderUuid = (string) $request->input('order_uuid');
 
+        // Fast path: return existing
         $existing = Order::query()
             ->where('user_id', $user->id)
             ->where('order_uuid', $orderUuid)
@@ -82,35 +84,7 @@ class OrderController extends Controller
             ->first();
 
         if ($existing) {
-            $orderData = (new OrderResource($existing))->resolve(request());
-
-            if ($existing->payment_provider === 'stripe') {
-                $piId = (string) $existing->stripe_payment_intent_id;
-                $clientSecret = '';
-
-                if ($piId !== '') {
-                    $pi = $this->stripe->retrievePaymentIntent($piId);
-                    $clientSecret = (string) (is_array($pi) ? ($pi['client_secret'] ?? '') : ($pi->client_secret ?? ''));
-                }
-
-                return $this->ok([
-                    'order' => $orderData,
-                    'payment' => [
-                        'provider' => 'stripe',
-                        'status' => (string) $existing->payment_status,
-                        'stripePaymentIntentId' => $piId,
-                        'stripeClientSecret' => $clientSecret,
-                    ],
-                ]);
-            }
-
-            return $this->ok([
-                'order' => $orderData,
-                'payment' => [
-                    'provider' => (string) $existing->payment_provider,
-                    'status' => (string) $existing->payment_status,
-                ],
-            ]);
+            return $this->respondExisting($existing);
         }
 
         $product = Product::query()
@@ -135,78 +109,167 @@ class OrderController extends Controller
 
         $quantity = (int) ($request->quantity ?? 1);
         $meta = $request->metadata ?? [];
-
         $provider = $this->resolver->providerFor($currency); // manual | stripe
 
-        return DB::transaction(function () use ($user, $currency, $product, $price, $package, $quantity, $meta, $provider, $orderUuid) {
+        try {
+            return DB::transaction(function () use (
+                $user,
+                $currency,
+                $product,
+                $price,
+                $package,
+                $quantity,
+                $meta,
+                $provider,
+                $orderUuid
+            ) {
+                // (اختياري) defensive: داخل الترانزكشن كمان افحص مرة ثانية
+                $already = Order::query()
+                    ->where('user_id', $user->id)
+                    ->where('order_uuid', $orderUuid)
+                    ->with(['items.product', 'items.package', 'delivery'])
+                    ->first();
 
-            $line = $this->pricing->calculateLine($product, $price, $package, $quantity);
+                if ($already) {
+                    return $this->respondExisting($already);
+                }
 
-            $order = new Order();
-            $order->user_id = $user->id;
-            $order->currency = $currency;
-            $order->order_uuid = $orderUuid;
+                $line = $this->pricing->calculateLine($product, $price, $package, $quantity);
 
-            $order->status = 'pending';
+                $order = new Order();
+                $order->user_id = $user->id;
+                $order->currency = $currency;
+                $order->order_uuid = $orderUuid;
 
-            $order->subtotal_amount_minor = (int) $line['total_price_minor'];
-            $order->fees_amount_minor = 0;
-            $order->total_amount_minor = (int) $line['total_price_minor'];
+                $order->status = 'pending';
 
-            $order->payment_provider = $provider;
-            $order->payment_status = 'pending';
-            $order->save();
+                $order->subtotal_amount_minor = (int) $line['total_price_minor'];
+                $order->fees_amount_minor = 0;
+                $order->total_amount_minor = (int) $line['total_price_minor'];
 
-            $item = new OrderItem();
-            $item->order_id = $order->id;
-            $item->product_id = $product->id;
-            $item->product_price_id = $price->id;
-            $item->package_id = $package?->id;
-            $item->quantity = (int) $line['quantity'];
-            $item->unit_price_minor = (int) $line['unit_price_minor'];
-            $item->total_price_minor = (int) $line['total_price_minor'];
-            $item->metadata = $meta;
-            $item->save();
+                $order->payment_provider = $provider;
+                $order->payment_status = 'pending';
 
-            // تجهيز Resource
-            $order->load(['items.product', 'items.package', 'delivery']);
-            $orderData = (new OrderResource($order))->resolve(request());
-
-            if ($provider === 'stripe') {
-                $pi = $this->stripe->createPaymentIntent(
-                    $currency,
-                    (int) $order->total_amount_minor,
-                    ['order_id' => (string) $order->id, 'user_id' => (string) $user->id]
-                );
-
-                $piId = (string) (is_array($pi) ? ($pi['id'] ?? '') : ($pi->id ?? ''));
-                $clientSecret = (string) (is_array($pi) ? ($pi['client_secret'] ?? '') : ($pi->client_secret ?? ''));
-
-                $order->stripe_payment_intent_id = $piId;
-                $order->payment_status = 'requires_action';
+                // هنا قد يحدث unique violation تحت الضغط
                 $order->save();
+
+                $item = new OrderItem();
+                $item->order_id = $order->id;
+                $item->product_id = $product->id;
+                $item->product_price_id = $price->id;
+                $item->package_id = $package?->id;
+                $item->quantity = (int) $line['quantity'];
+                $item->unit_price_minor = (int) $line['unit_price_minor'];
+                $item->total_price_minor = (int) $line['total_price_minor'];
+                $item->metadata = $meta;
+                $item->save();
 
                 $order->load(['items.product', 'items.package', 'delivery']);
                 $orderData = (new OrderResource($order))->resolve(request());
 
+                if ($provider === 'stripe') {
+                    $pi = $this->stripe->createPaymentIntent(
+                        $currency,
+                        (int) $order->total_amount_minor,
+                        ['order_id' => (string) $order->id, 'user_id' => (string) $user->id]
+                    );
+
+                    $piId = (string) (is_array($pi) ? ($pi['id'] ?? '') : ($pi->id ?? ''));
+                    $clientSecret = (string) (is_array($pi) ? ($pi['client_secret'] ?? '') : ($pi->client_secret ?? ''));
+
+                    $order->stripe_payment_intent_id = $piId;
+                    $order->payment_status = 'requires_action';
+                    $order->save();
+
+                    $order->load(['items.product', 'items.package', 'delivery']);
+                    $orderData = (new OrderResource($order))->resolve(request());
+
+                    return $this->ok([
+                        'order' => $orderData,
+                        'payment' => [
+                            'provider' => 'stripe',
+                            'status' => (string) $order->payment_status,
+                            'stripePaymentIntentId' => (string) $order->stripe_payment_intent_id,
+                            'stripeClientSecret' => $clientSecret,
+                        ],
+                    ], [], 201);
+                }
+
                 return $this->ok([
                     'order' => $orderData,
                     'payment' => [
-                        'provider' => 'stripe',
+                        'provider' => 'manual',
                         'status' => (string) $order->payment_status,
-                        'stripePaymentIntentId' => (string) $order->stripe_payment_intent_id,
-                        'stripeClientSecret' => $clientSecret,
                     ],
                 ], [], 201);
+            });
+        } catch (QueryException $e) {
+            // Unique collision (idempotency under pressure):
+            // إذا صار unique violation على (user_id, order_uuid) رجّع الطلب الموجود بدل 500.
+            if ($this->isUniqueViolation($e)) {
+                $existing = Order::query()
+                    ->where('user_id', $user->id)
+                    ->where('order_uuid', $orderUuid)
+                    ->with(['items.product', 'items.package', 'delivery'])
+                    ->first();
+
+                if ($existing) {
+                    return $this->respondExisting($existing);
+                }
+            }
+
+            throw $e;
+        }
+    }
+
+    private function respondExisting(Order $existing)
+    {
+        $orderData = (new OrderResource($existing))->resolve(request());
+
+        if ((string) $existing->payment_provider === 'stripe') {
+            $piId = (string) $existing->stripe_payment_intent_id;
+            $clientSecret = '';
+
+            if ($piId !== '') {
+                $pi = $this->stripe->retrievePaymentIntent($piId);
+                $clientSecret = (string) (is_array($pi) ? ($pi['client_secret'] ?? '') : ($pi->client_secret ?? ''));
             }
 
             return $this->ok([
                 'order' => $orderData,
                 'payment' => [
-                    'provider' => 'manual',
-                    'status' => (string) $order->payment_status,
+                    'provider' => 'stripe',
+                    'status' => (string) $existing->payment_status,
+                    'stripePaymentIntentId' => $piId,
+                    'stripeClientSecret' => $clientSecret,
                 ],
-            ], [], 201);
-        });
+            ]);
+        }
+
+        return $this->ok([
+            'order' => $orderData,
+            'payment' => [
+                'provider' => (string) $existing->payment_provider,
+                'status' => (string) $existing->payment_status,
+            ],
+        ]);
+    }
+
+    private function isUniqueViolation(QueryException $e): bool
+    {
+        // PostgreSQL: SQLSTATE 23505
+        $sqlState = $e->errorInfo[0] ?? null;
+        if ($sqlState === '23505') {
+            return true;
+        }
+
+        // MySQL: 23000 / 1062
+        $driverCode = $e->errorInfo[1] ?? null;
+        if ($sqlState === '23000' && (int) $driverCode === 1062) {
+            return true;
+        }
+
+        $msg = strtolower((string) $e->getMessage());
+        return str_contains($msg, 'unique') || str_contains($msg, 'duplicate');
     }
 }
