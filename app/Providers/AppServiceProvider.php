@@ -31,6 +31,11 @@ class AppServiceProvider extends ServiceProvider
             return [Limit::perMinute(30)->by($key)];
         });
 
+        RateLimiter::for('wallet', function (Request $request) {
+            $key = $request->user()?->id ? 'wallet:u:' . $request->user()->id : 'wallet:ip:' . $request->ip();
+            return [Limit::perMinute(10)->by($key)];
+        });
+
         RateLimiter::for('admin', function (Request $request) {
             $key = $request->user()?->id ? 'admin:u:' . $request->user()->id : 'admin:ip:' . $request->ip();
             return [Limit::perMinute(60)->by($key)];

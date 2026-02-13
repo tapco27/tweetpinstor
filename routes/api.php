@@ -8,12 +8,20 @@ use App\Http\Controllers\Api\V1\OrderController;
 use App\Http\Controllers\Api\V1\AdminOrderController;
 use App\Http\Controllers\Api\V1\StripeWebhookController;
 
+// User Wallet/Payment Methods
+use App\Http\Controllers\Api\V1\PaymentMethodController;
+use App\Http\Controllers\Api\V1\WalletController;
+
 // Admin CRUD Controllers
 use App\Http\Controllers\Api\V1\Admin\AdminCategoryController;
 use App\Http\Controllers\Api\V1\Admin\AdminProductController;
 use App\Http\Controllers\Api\V1\Admin\AdminProductPriceController;
 use App\Http\Controllers\Api\V1\Admin\AdminProductPackageController;
 use App\Http\Controllers\Api\V1\Admin\AdminBannerController;
+
+// Admin Wallet/Payment Methods
+use App\Http\Controllers\Api\V1\Admin\AdminPaymentMethodController;
+use App\Http\Controllers\Api\V1\Admin\AdminWalletTopupController;
 
 Route::prefix('v1')->group(function () {
 
@@ -39,10 +47,26 @@ Route::prefix('v1')->group(function () {
 
     // Admin
     Route::middleware(['auth:api', 'admin', 'throttle:admin'])->prefix('admin')->group(function () {
+        // Orders admin actions
         Route::post('/orders/{id}/mark-paid', [AdminOrderController::class, 'markPaid']);
         Route::post('/orders/{id}/retry-delivery', [AdminOrderController::class, 'retryDelivery']);
         Route::get('/orders/delivery-failed', [AdminOrderController::class, 'deliveryFailed']);
 
+        // Payment Methods (Admin)
+        Route::get('/payment-methods', [AdminPaymentMethodController::class, 'index']);
+        Route::post('/payment-methods', [AdminPaymentMethodController::class, 'store']);
+        Route::get('/payment-methods/{id}', [AdminPaymentMethodController::class, 'show']);
+        Route::put('/payment-methods/{id}', [AdminPaymentMethodController::class, 'update']);
+        Route::delete('/payment-methods/{id}', [AdminPaymentMethodController::class, 'destroy']);
+
+        // Wallet Topups (Admin)
+        Route::get('/wallet-topups', [AdminWalletTopupController::class, 'index']);
+        Route::get('/wallet-topups/{id}', [AdminWalletTopupController::class, 'show']);
+        Route::get('/wallet-topups/{id}/receipt-url', [AdminWalletTopupController::class, 'receiptUrl']);
+        Route::post('/wallet-topups/{id}/approve', [AdminWalletTopupController::class, 'approve']);
+        Route::post('/wallet-topups/{id}/reject', [AdminWalletTopupController::class, 'reject']);
+
+        // Admin CRUD
         Route::get('/categories', [AdminCategoryController::class, 'index']);
         Route::post('/categories', [AdminCategoryController::class, 'store']);
         Route::get('/categories/{id}', [AdminCategoryController::class, 'show']);
@@ -96,6 +120,15 @@ Route::prefix('v1')->group(function () {
             Route::get('/products', [CatalogController::class, 'products']);
             Route::get('/products/featured', [CatalogController::class, 'featured']);
             Route::get('/products/{id}', [CatalogController::class, 'product']);
+
+            // Payment Methods (User)
+            Route::get('/payment-methods', [PaymentMethodController::class, 'index']);
+
+            // Wallet (User)
+            Route::get('/wallet', [WalletController::class, 'show']);
+            Route::get('/wallet/transactions', [WalletController::class, 'transactions']);
+            Route::get('/wallet/topups', [WalletController::class, 'topups']);
+            Route::post('/wallet/topups', [WalletController::class, 'createTopup'])->middleware('throttle:wallet');
 
             // Orders
             Route::get('/orders', [OrderController::class, 'index']);

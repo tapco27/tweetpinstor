@@ -14,8 +14,13 @@ class EnforceUserCurrency
             return $next($request);
         }
 
-        // Admin: لا نقيّد بالعملة ولا نثبت عملة
-        if (method_exists($user, 'hasRole') && $user->hasRole('admin')) {
+        // Admin bypass (مطابق لمنطق RequireAdmin)
+        $isAdmin = $user && (
+            (method_exists($user, 'hasRole') && $user->hasRole('admin'))
+            || (($user->role ?? null) === 'admin')
+        );
+
+        if ($isAdmin) {
             app()->instance('user_currency', null);
             return $next($request);
         }
@@ -27,7 +32,7 @@ class EnforceUserCurrency
 
             return response()->json([
                 'data' => null,
-                'meta' => $rid ? ['request_id' => (string) $rid] : (object)[],
+                'meta' => $rid ? ['request_id' => (string) $rid] : (object) [],
                 'errors' => [
                     'message' => 'Currency required',
                     'details' => [
