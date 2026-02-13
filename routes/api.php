@@ -74,27 +74,33 @@ Route::prefix('v1')->group(function () {
         Route::delete('/banners/{id}', [AdminBannerController::class, 'destroy']);
     });
 
-    // User protected
-    Route::middleware(['auth:api', 'user.currency'])->group(function () {
+    // User protected (بدون user.currency)
+    Route::middleware(['auth:api'])->group(function () {
 
+        // متاح حتى لو currency = null
         Route::get('/me', [AuthController::class, 'me']);
+        Route::middleware('throttle:auth')->post('/me/currency', [AuthController::class, 'setCurrency']);
 
         Route::middleware('throttle:auth')->post('/auth/logout', [AuthController::class, 'logout']);
         Route::middleware('throttle:auth')->post('/auth/refresh', [AuthController::class, 'refresh']);
 
-        // Home (endpoint واحد ممتاز للفلاتر)
-        Route::get('/home', [CatalogController::class, 'home']);
+        // كل ما تحتها يحتاج user.currency
+        Route::middleware(['user.currency'])->group(function () {
 
-        // Catalog
-        Route::get('/categories', [CatalogController::class, 'categories']);
-        Route::get('/banners', [CatalogController::class, 'banners']);
-        Route::get('/products', [CatalogController::class, 'products']);
-        Route::get('/products/featured', [CatalogController::class, 'featured']);
-        Route::get('/products/{id}', [CatalogController::class, 'product']);
+            // Home (endpoint واحد ممتاز للفلاتر)
+            Route::get('/home', [CatalogController::class, 'home']);
 
-        // Orders
-        Route::get('/orders', [OrderController::class, 'index']);
-        Route::get('/orders/{id}', [OrderController::class, 'show']);
-        Route::post('/orders', [OrderController::class, 'store'])->middleware('throttle:orders');
+            // Catalog
+            Route::get('/categories', [CatalogController::class, 'categories']);
+            Route::get('/banners', [CatalogController::class, 'banners']);
+            Route::get('/products', [CatalogController::class, 'products']);
+            Route::get('/products/featured', [CatalogController::class, 'featured']);
+            Route::get('/products/{id}', [CatalogController::class, 'product']);
+
+            // Orders
+            Route::get('/orders', [OrderController::class, 'index']);
+            Route::get('/orders/{id}', [OrderController::class, 'show']);
+            Route::post('/orders', [OrderController::class, 'store'])->middleware('throttle:orders');
+        });
     });
 });

@@ -15,8 +15,6 @@ class StripeService
   {
     $stripe = $this->client();
 
-    // Stripe expects amount in the smallest currency unit for supported currencies.
-    // currency decision later: we keep logic; actual activation controlled by config.
     $intent = $stripe->paymentIntents->create([
       'amount' => $amountMinor,
       'currency' => strtolower($currency),
@@ -27,6 +25,18 @@ class StripeService
     return [
       'id' => $intent->id,
       'client_secret' => $intent->client_secret,
+    ];
+  }
+
+  public function retrievePaymentIntent(string $id): array
+  {
+    $stripe = $this->client();
+    $intent = $stripe->paymentIntents->retrieve($id, []);
+
+    return [
+      'id' => $intent->id,
+      'client_secret' => $intent->client_secret,
+      'status' => $intent->status,
     ];
   }
 

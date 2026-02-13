@@ -6,10 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class Banner extends Model
 {
-    protected $fillable = [
-        'image_url','link_type','link_value',
-        'currency','is_active','sort_order',
-    ];
+    protected $guarded = [];
 
     protected $casts = [
         'is_active' => 'boolean',

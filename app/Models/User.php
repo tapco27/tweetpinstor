@@ -53,13 +53,23 @@ class User extends Authenticatable implements JWTSubject
         return [];
     }
 
-    // منع تغيير العملة بعد إنشائها
+    // تثبيت العملة: يسمح بتعيينها مرة واحدة فقط (من null -> قيمة)
     protected static function booted(): void
     {
         static::updating(function (User $user) {
-            if ($user->isDirty('currency') || $user->isDirty('currency_selected_at')) {
+            $originalCurrency = $user->getOriginal('currency');
+
+            $isCurrencyChanging = $user->isDirty('currency');
+            $isSelectedAtChanging = $user->isDirty('currency_selected_at');
+
+            // إذا كانت العملة محددة مسبقاً -> ممنوع تغييرها أو تغيير تاريخ اختيارها
+            if (!empty($originalCurrency) && ($isCurrencyChanging || $isSelectedAtChanging)) {
+                // حتى لو حاول يكتب نفس القيمة، اعتبرها immutable لتجنب عبث غير مقصود
                 throw new RuntimeException('Currency is immutable once set.');
             }
+
+            // إذا كانت العملة null سابقاً: اسمح بتعيينها + currency_selected_at
+            // (لا ترمي أي استثناء)
         });
     }
 }

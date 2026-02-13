@@ -8,6 +8,7 @@ use App\Http\Requests\Api\V1\LoginRequest;
 use App\Http\Resources\UserResource;
 use App\Models\User;
 use App\Support\ApiResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 
 class AuthController extends Controller
@@ -62,6 +63,25 @@ class AuthController extends Controller
     public function me()
     {
         return $this->ok(new UserResource(auth('api')->user()));
+    }
+
+    public function setCurrency(Request $request)
+    {
+        $user = auth('api')->user();
+
+        if (!empty($user->currency)) {
+            return $this->fail('Currency already set', 409);
+        }
+
+        $data = $request->validate([
+            'currency' => ['required', 'in:TRY,SYP'],
+        ]);
+
+        $user->currency = strtoupper($data['currency']);
+        $user->currency_selected_at = now();
+        $user->save();
+
+        return $this->ok(new UserResource($user));
     }
 
     public function logout()

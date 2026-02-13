@@ -6,16 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class FulfillmentRequest extends Model
 {
-    protected $fillable = [
-        'order_id',
-        'provider',
-        'request_id',
-        'status',
-        'http_status',
-        'request_payload',
-        'response_payload',
-        'error_message',
-    ];
+    protected $guarded = [];
 
     protected $casts = [
         'http_status' => 'integer',

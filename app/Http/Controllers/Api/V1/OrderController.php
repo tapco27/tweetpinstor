@@ -14,7 +14,7 @@ use App\Services\PaymentChannelResolver;
 use App\Services\PricingService;
 use App\Services\StripeService;
 use App\Support\ApiResponse;
-use Dedoc\Scramble\Attributes\BodyParameter; // ✅ add
+use Dedoc\Scramble\Attributes\BodyParameter;
 use Illuminate\Support\Facades\DB;
 
 class OrderController extends Controller
@@ -72,6 +72,47 @@ class OrderController extends Controller
             return $this->fail('Currency not set', 422);
         }
 
+        // Idempotency: إذا كان فيه Order بنفس order_uuid + user_id رجّع نفس الطلب
+        $orderUuid = (string) $request->input('order_uuid');
+
+        $existing = Order::query()
+            ->where('user_id', $user->id)
+            ->where('order_uuid', $orderUuid)
+            ->with(['items.product', 'items.package', 'delivery'])
+            ->first();
+
+        if ($existing) {
+            $orderData = (new OrderResource($existing))->resolve(request());
+
+            if ($existing->payment_provider === 'stripe') {
+                $piId = (string) $existing->stripe_payment_intent_id;
+                $clientSecret = '';
+
+                if ($piId !== '') {
+                    $pi = $this->stripe->retrievePaymentIntent($piId);
+                    $clientSecret = (string) (is_array($pi) ? ($pi['client_secret'] ?? '') : ($pi->client_secret ?? ''));
+                }
+
+                return $this->ok([
+                    'order' => $orderData,
+                    'payment' => [
+                        'provider' => 'stripe',
+                        'status' => (string) $existing->payment_status,
+                        'stripePaymentIntentId' => $piId,
+                        'stripeClientSecret' => $clientSecret,
+                    ],
+                ]);
+            }
+
+            return $this->ok([
+                'order' => $orderData,
+                'payment' => [
+                    'provider' => (string) $existing->payment_provider,
+                    'status' => (string) $existing->payment_status,
+                ],
+            ]);
+        }
+
         $product = Product::query()
             ->where('id', $request->product_id)
             ->where('is_active', true)
@@ -97,13 +138,14 @@ class OrderController extends Controller
 
         $provider = $this->resolver->providerFor($currency); // manual | stripe
 
-        return DB::transaction(function () use ($user, $currency, $product, $price, $package, $quantity, $meta, $provider) {
+        return DB::transaction(function () use ($user, $currency, $product, $price, $package, $quantity, $meta, $provider, $orderUuid) {
 
             $line = $this->pricing->calculateLine($product, $price, $package, $quantity);
 
             $order = new Order();
             $order->user_id = $user->id;
             $order->currency = $currency;
+            $order->order_uuid = $orderUuid;
 
             $order->status = 'pending';
 
@@ -137,11 +179,13 @@ class OrderController extends Controller
                     ['order_id' => (string) $order->id, 'user_id' => (string) $user->id]
                 );
 
-                $order->stripe_payment_intent_id = $pi['id'];
+                $piId = (string) (is_array($pi) ? ($pi['id'] ?? '') : ($pi->id ?? ''));
+                $clientSecret = (string) (is_array($pi) ? ($pi['client_secret'] ?? '') : ($pi->client_secret ?? ''));
+
+                $order->stripe_payment_intent_id = $piId;
                 $order->payment_status = 'requires_action';
                 $order->save();
 
-                // تحديث orderData بعد حفظ PI + status
                 $order->load(['items.product', 'items.package', 'delivery']);
                 $orderData = (new OrderResource($order))->resolve(request());
 
@@ -151,7 +195,7 @@ class OrderController extends Controller
                         'provider' => 'stripe',
                         'status' => (string) $order->payment_status,
                         'stripePaymentIntentId' => (string) $order->stripe_payment_intent_id,
-                        'stripeClientSecret' => (string) $pi['client_secret'],
+                        'stripeClientSecret' => $clientSecret,
                     ],
                 ], [], 201);
             }
