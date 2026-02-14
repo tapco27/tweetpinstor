@@ -12,6 +12,7 @@ use App\Models\Wallet;
 use App\Models\WalletTopup;
 use App\Models\WalletTransaction;
 use App\Support\ApiResponse;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
@@ -112,7 +113,7 @@ class WalletController extends Controller
 
         $topupUuid = (string) $request->topup_uuid;
 
-        // Idempotency fast path (topup_uuid unique globally, but keep user-friendly)
+        // ✅ Idempotency fast path (same user only)
         $existing = WalletTopup::query()
             ->where('user_id', $user->id)
             ->where('topup_uuid', $topupUuid)
@@ -142,8 +143,10 @@ class WalletController extends Controller
 
         try {
             $topup = DB::transaction(function () use ($user, $wallet, $pm, $currency, $request, $topupUuid, $path) {
-                // Defensive idempotency inside tx
+
+                // ✅ Critical fix: check existing by (user_id, topup_uuid) ONLY
                 $already = WalletTopup::query()
+                    ->where('user_id', $user->id)
                     ->where('topup_uuid', $topupUuid)
                     ->lockForUpdate()
                     ->first();
@@ -174,12 +177,45 @@ class WalletController extends Controller
 
                 return $t->load('paymentMethod');
             });
-        } catch (\Throwable $e) {
-            // If DB fails, delete file
-            try {
-                Storage::disk('local')->delete($path);
-            } catch (\Throwable $_) {}
+        } catch (QueryException $e) {
+            // ✅ Always delete uploaded file on collision/failure to avoid orphans
+            try { Storage::disk('local')->delete($path); } catch (\Throwable $_) {}
+
+            $sqlState = $e->errorInfo[0] ?? $e->getCode();
+
+            // Postgres unique violation: 23505 (MySQL common: 23000)
+            if (in_array((string) $sqlState, ['23505', '23000'], true)) {
+
+                // If it's ours => return existing (idempotency under race)
+                $mine = WalletTopup::query()
+                    ->where('user_id', $user->id)
+                    ->where('topup_uuid', $topupUuid)
+                    ->with('paymentMethod')
+                    ->first();
+
+                if ($mine) {
+                    return $this->ok(new WalletTopupResource($mine));
+                }
+
+                // Otherwise => conflict WITHOUT leaking data
+                $exists = WalletTopup::query()
+                    ->where('topup_uuid', $topupUuid)
+                    ->exists();
+
+                if ($exists) {
+                    return $this->fail('Topup UUID conflict', 409);
+                }
+            }
+
             throw $e;
+        } catch (\Throwable $e) {
+            try { Storage::disk('local')->delete($path); } catch (\Throwable $_) {}
+            throw $e;
+        }
+
+        // ✅ If tx returned existing topup (race), remove this request’s uploaded file (orphan cleanup)
+        if ((string) ($topup->receipt_image_path ?? '') !== (string) $path) {
+            try { Storage::disk('local')->delete($path); } catch (\Throwable $_) {}
         }
 
         return $this->ok(new WalletTopupResource($topup), [], 201);
