@@ -113,6 +113,11 @@ class Handler extends ExceptionHandler
                 return $this->apiFail($request, 'Unauthenticated', 401);
             }
 
+            // ✅ 409 - Invalid state transition
+            if ($e instanceof \App\Exceptions\InvalidStateTransitionException) {
+                return $this->apiFail($request, $e->getMessage() ?: 'Invalid state transition', 409);
+            }
+
             // Not found (Model)
             if ($e instanceof ModelNotFoundException) {
                 return $this->apiFail($request, 'Not found', 404);
