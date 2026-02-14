@@ -2,16 +2,18 @@
 
 namespace App\Services;
 
+use App\Models\Order;
 use App\Models\Wallet;
 use App\Models\WalletTopup;
 use App\Models\WalletTransaction;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 class WalletService
 {
     /**
-     * Approve + Post (credit) topup in ONE atomic transaction.
-     * Idempotent: if already posted => returns existing tx.
+     * Posts a topup (admin approval).
+     * Idempotent: if already posted, returns existing tx.
      */
     public function postTopup(int $topupId, int $adminUserId, ?string $reviewNote = null): array
     {
@@ -78,21 +80,17 @@ class WalletService
             $tx = new WalletTransaction();
             $tx->wallet_id = $wallet->id;
             $tx->user_id = $topup->user_id;
-
             $tx->direction = 'credit';
             $tx->status = 'posted';
             $tx->type = 'topup';
-
-            $tx->amount_minor = (int) $topup->amount_minor;
+            $tx->amount_minor = (int) $topup->amount_minor; // always > 0
             $tx->balance_after_minor = $newBalance;
-
             $tx->reference_type = 'wallet_topup';
             $tx->reference_id = (int) $topup->id;
             $tx->reference_uuid = (string) ($topup->topup_uuid ?? null);
             $tx->meta = [
                 'payment_method_id' => $topup->payment_method_id,
             ];
-
             $tx->save();
 
             $wallet->balance_minor = $newBalance;
@@ -129,5 +127,172 @@ class WalletService
 
             return $topup;
         });
+    }
+
+    /**
+     * Pay an order with the user's wallet.
+     *
+     * Safe by design:
+     * - locks order + wallet rows
+     * - creates ONE debit tx (unique constraint prevents duplicates)
+     * - marks order paid + provider=wallet
+     */
+    public function payOrderWithWallet(int $orderId, int $userId): array
+    {
+        try {
+            return DB::transaction(function () use ($orderId, $userId) {
+                $order = Order::query()
+                    ->whereKey($orderId)
+                    ->where('user_id', $userId)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                // If already paid, never debit again
+                if ($order->payment_status === 'paid') {
+                    if ((string) $order->payment_provider !== 'wallet') {
+                        abort(409, 'Order already paid');
+                    }
+
+                    $tx = $this->findOrderDebitTx($userId, (int) $order->id);
+
+                    return [
+                        'order' => $order,
+                        'transaction' => $tx,
+                        'did_pay' => false,
+                    ];
+                }
+
+                // Block paying orders that are not in payable state
+                if (!in_array((string) $order->payment_status, ['pending', 'requires_action'], true)) {
+                    abort(409, 'Order not payable');
+                }
+
+                $amount = (int) $order->total_amount_minor;
+                if ($amount <= 0) {
+                    abort(422, 'Invalid order amount');
+                }
+
+                // If stripe intent exists, do not allow wallet payment on same order
+                if ((string) $order->payment_provider === 'stripe' && !empty($order->stripe_payment_intent_id)) {
+                    abort(409, 'Order has an active gateway payment intent');
+                }
+
+                $wallet = Wallet::query()
+                    ->where('user_id', $userId)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                if ((string) $wallet->currency !== (string) $order->currency) {
+                    abort(500, 'Wallet currency mismatch');
+                }
+
+                // Idempotency: if tx already exists, heal order state & return
+                $existingTx = $this->findOrderDebitTx($userId, (int) $order->id);
+                if ($existingTx) {
+                    $this->markOrderPaidByWallet($order);
+                    return [
+                        'order' => $order,
+                        'transaction' => $existingTx,
+                        'did_pay' => false,
+                    ];
+                }
+
+                if ((int) $wallet->balance_minor < $amount) {
+                    abort(422, 'Insufficient wallet balance');
+                }
+
+                $newBalance = (int) $wallet->balance_minor - $amount;
+
+                $tx = new WalletTransaction();
+                $tx->wallet_id = $wallet->id;
+                $tx->user_id = $userId;
+                $tx->direction = 'debit';
+                $tx->status = 'posted';
+                $tx->type = 'order_payment';
+                $tx->amount_minor = $amount; // always > 0
+                $tx->balance_after_minor = $newBalance;
+                $tx->reference_type = 'order';
+                $tx->reference_id = (int) $order->id;
+                $tx->reference_uuid = $order->order_uuid ? (string) $order->order_uuid : null;
+                $tx->meta = [
+                    'currency' => (string) $order->currency,
+                    'order_uuid' => (string) ($order->order_uuid ?? ''),
+                ];
+                $tx->save();
+
+                $wallet->balance_minor = $newBalance;
+                $wallet->save();
+
+                $this->markOrderPaidByWallet($order);
+
+                return [
+                    'order' => $order,
+                    'transaction' => $tx,
+                    'did_pay' => true,
+                ];
+            });
+        } catch (QueryException $e) {
+            // Safety net: if unique constraint hits under extreme concurrency, return existing tx.
+            if ($this->isUniqueViolation($e)) {
+                $order = Order::query()
+                    ->whereKey($orderId)
+                    ->where('user_id', $userId)
+                    ->first();
+
+                $tx = $order ? $this->findOrderDebitTx($userId, (int) $order->id) : null;
+
+                if ($order && $tx) {
+                    $this->markOrderPaidByWallet($order);
+                    return [
+                        'order' => $order,
+                        'transaction' => $tx,
+                        'did_pay' => false,
+                    ];
+                }
+            }
+
+            throw $e;
+        }
+    }
+
+    private function markOrderPaidByWallet(Order $order): void
+    {
+        $order->payment_provider = 'wallet';
+        $order->payment_status = 'paid';
+
+        if (!in_array((string) $order->status, ['paid', 'delivered'], true)) {
+            $order->status = 'paid';
+        }
+
+        $order->save();
+    }
+
+    private function findOrderDebitTx(int $userId, int $orderId): ?WalletTransaction
+    {
+        return WalletTransaction::query()
+            ->where('user_id', $userId)
+            ->where('reference_type', 'order')
+            ->where('reference_id', $orderId)
+            ->where('direction', 'debit')
+            ->where('type', 'order_payment')
+            ->first();
+    }
+
+    private function isUniqueViolation(QueryException $e): bool
+    {
+        // PostgreSQL: SQLSTATE 23505
+        $sqlState = $e->errorInfo[0] ?? null;
+        if ($sqlState === '23505') {
+            return true;
+        }
+
+        // MySQL: 23000 / 1062
+        $driverCode = $e->errorInfo[1] ?? null;
+        if ($sqlState === '23000' && (int) $driverCode === 1062) {
+            return true;
+        }
+
+        $msg = strtolower((string) $e->getMessage());
+        return str_contains($msg, 'unique') || str_contains($msg, 'duplicate');
     }
 }

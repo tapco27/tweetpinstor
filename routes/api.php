@@ -133,6 +133,8 @@ Route::prefix('v1')->group(function () {
             // Orders
             Route::get('/orders', [OrderController::class, 'index']);
             Route::get('/orders/{id}', [OrderController::class, 'show']);
+            Route::post('/orders/{id}/pay-wallet', [OrderController::class, 'payWithWallet'])
+                ->middleware('throttle:wallet');
             Route::post('/orders', [OrderController::class, 'store'])->middleware('throttle:orders');
         });
     });

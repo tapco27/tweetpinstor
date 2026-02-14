@@ -56,6 +56,32 @@ class OrderController extends Controller
         return $this->ok(new OrderResource($order));
     }
 
+    public function payWithWallet($id, \App\Services\WalletService $wallets)
+    {
+        $userId = (int) auth('api')->id();
+
+        $result = $wallets->payOrderWithWallet((int) $id, $userId);
+
+        $order = \App\Models\Order::query()
+            ->where('id', (int) $id)
+            ->where('user_id', $userId)
+            ->with(['items.product', 'items.package', 'delivery'])
+            ->firstOrFail();
+
+        // Dispatch delivery ONLY when payment was newly posted
+        if (!empty($result['did_pay']) && (string) $order->status !== 'delivered') {
+            \App\Jobs\DeliverOrderJob::dispatch((int) $order->id);
+        }
+
+        return $this->ok([
+            'order' => (new \App\Http\Resources\OrderResource($order))->resolve(request()),
+            'walletTransaction' => !empty($result['transaction'])
+                ? (new \App\Http\Resources\WalletTransactionResource($result['transaction']))->resolve(request())
+                : null,
+            'did_pay' => (bool) ($result['did_pay'] ?? false),
+        ]);
+    }
+
     #[BodyParameter(
         name: 'metadata',
         description: 'Key-value object. Must include category requirement_key (uid/player_id/email/phone) when required.',
