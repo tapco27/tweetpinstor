@@ -7,6 +7,7 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use RuntimeException;
 use Tymon\JWTAuth\Contracts\JWTSubject;
 use Spatie\Permission\Traits\HasRoles;
@@ -28,6 +29,7 @@ class User extends Authenticatable implements JWTSubject
     protected $guarded = [
         'currency',
         'currency_selected_at',
+        'price_group_id',
     ];
 
     protected $hidden = [
@@ -40,6 +42,7 @@ class User extends Authenticatable implements JWTSubject
         return [
             'email_verified_at' => 'datetime',
             'currency_selected_at' => 'datetime',
+            'price_group_id' => 'integer',
             'password' => 'hashed',
         ];
     }
@@ -83,5 +86,10 @@ class User extends Authenticatable implements JWTSubject
     public function socialAccounts(): HasMany
     {
         return $this->hasMany(\App\Models\SocialAccount::class);
+    }
+
+    public function priceGroup(): BelongsTo
+    {
+        return $this->belongsTo(\App\Models\PriceGroup::class);
     }
 }
