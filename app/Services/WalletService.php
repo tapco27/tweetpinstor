@@ -255,6 +255,115 @@ class WalletService
         }
     }
 
+    /**
+     * Admin: refund a wallet-paid order back to the user's wallet.
+     *
+     * Idempotent:
+     * - if refund tx already exists, returns it and ensures order state.
+     */
+    public function refundWalletOrder(int $orderId, int $adminUserId, ?string $reason = null): array
+    {
+        return DB::transaction(function () use ($orderId, $adminUserId, $reason) {
+            $order = Order::query()
+                ->whereKey($orderId)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ((string) ($order->payment_provider ?? '') !== 'wallet') {
+                abort(422, 'Order is not wallet-paid');
+            }
+
+            if ((string) ($order->payment_status ?? '') !== 'paid') {
+                abort(422, 'Order is not paid');
+            }
+
+            if ((string) ($order->status ?? '') === 'delivered') {
+                abort(409, 'Cannot refund a delivered order');
+            }
+
+            // If already refunded, return existing tx
+            $existingTx = WalletTransaction::query()
+                ->where('user_id', (int) $order->user_id)
+                ->where('reference_type', 'order')
+                ->where('reference_id', (int) $order->id)
+                ->where('direction', 'credit')
+                ->where('type', 'order_refund')
+                ->first();
+
+            $wallet = Wallet::query()
+                ->where('user_id', (int) $order->user_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            if ((string) $wallet->currency !== (string) $order->currency) {
+                abort(500, 'Wallet currency mismatch');
+            }
+
+            if ($existingTx) {
+                $this->markOrderRefunded($order, $adminUserId, $reason);
+                return ['order' => $order, 'transaction' => $existingTx];
+            }
+
+            $amount = (int) $order->total_amount_minor;
+            if ($amount <= 0) {
+                abort(422, 'Invalid order amount');
+            }
+
+            $newBalance = (int) $wallet->balance_minor + $amount;
+
+            $tx = new WalletTransaction();
+            $tx->wallet_id = (int) $wallet->id;
+            $tx->user_id = (int) $order->user_id;
+            $tx->direction = 'credit';
+            $tx->status = 'posted';
+            $tx->type = 'order_refund';
+            $tx->amount_minor = $amount;
+            $tx->balance_after_minor = $newBalance;
+            $tx->reference_type = 'order';
+            $tx->reference_id = (int) $order->id;
+            $tx->reference_uuid = $order->order_uuid ? (string) $order->order_uuid : null;
+            $tx->meta = [
+                'currency' => (string) $order->currency,
+                'order_uuid' => (string) ($order->order_uuid ?? ''),
+                'refunded_by_admin_id' => (int) $adminUserId,
+                'reason' => $reason,
+            ];
+            $tx->save();
+
+            $wallet->balance_minor = $newBalance;
+            $wallet->save();
+
+            $this->markOrderRefunded($order, $adminUserId, $reason);
+
+            return ['order' => $order, 'transaction' => $tx];
+        });
+    }
+
+    private function markOrderRefunded(Order $order, int $adminUserId, ?string $reason = null): void
+    {
+        $order->status = 'refunded';
+        $order->payment_status = 'refunded';
+        $order->save();
+
+        // Optional audit log (best-effort)
+        try {
+            if (class_exists(\App\Models\AuditLog::class)) {
+                \App\Models\AuditLog::create([
+                    'actor_id' => $adminUserId,
+                    'action' => 'order_refund_wallet',
+                    'entity_type' => 'order',
+                    'entity_id' => (int) $order->id,
+                    'meta' => [
+                        'reason' => $reason,
+                        'payment_provider' => (string) ($order->payment_provider ?? ''),
+                    ],
+                ]);
+            }
+        } catch (\Throwable $e) {
+            // ignore
+        }
+    }
+
     private function markOrderPaidByWallet(Order $order): void
     {
         $order->payment_provider = 'wallet';

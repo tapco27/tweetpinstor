@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use RuntimeException;
 use Tymon\JWTAuth\Contracts\JWTSubject;
 use Spatie\Permission\Traits\HasRoles;
@@ -77,5 +78,10 @@ class User extends Authenticatable implements JWTSubject
     public function wallet(): HasOne
     {
         return $this->hasOne(\App\Models\Wallet::class);
+    }
+
+    public function socialAccounts(): HasMany
+    {
+        return $this->hasMany(\App\Models\SocialAccount::class);
     }
 }

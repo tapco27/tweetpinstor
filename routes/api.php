@@ -18,6 +18,11 @@ use App\Http\Controllers\Api\V1\Admin\AdminProductController;
 use App\Http\Controllers\Api\V1\Admin\AdminProductPriceController;
 use App\Http\Controllers\Api\V1\Admin\AdminProductPackageController;
 use App\Http\Controllers\Api\V1\Admin\AdminBannerController;
+use App\Http\Controllers\Api\V1\Admin\AdminDigitalPinController;
+use App\Http\Controllers\Api\V1\Admin\AdminProviderIntegrationController;
+use App\Http\Controllers\Api\V1\Admin\AdminPriceGroupController;
+use App\Http\Controllers\Api\V1\Admin\AdminTweetPinController;
+use App\Http\Controllers\Api\V1\Admin\AdminTweetPinMappingController;
 
 // Admin Wallet/Payment Methods
 use App\Http\Controllers\Api\V1\Admin\AdminPaymentMethodController;
@@ -31,6 +36,8 @@ Route::prefix('v1')->group(function () {
     // Auth (throttle)
     Route::middleware('throttle:auth')->post('/auth/register', [AuthController::class, 'register']);
     Route::middleware('throttle:auth')->post('/auth/login', [AuthController::class, 'login']);
+    Route::middleware('throttle:auth')->post('/auth/google', [AuthController::class, 'loginWithGoogle']);
+    Route::middleware('throttle:auth')->post('/auth/apple', [AuthController::class, 'loginWithApple']);
 
     // Mock Fulfillment (اختبار فقط)
     if (app()->environment(['local', 'testing'])) {
@@ -51,6 +58,7 @@ Route::prefix('v1')->group(function () {
         Route::post('/orders/{id}/mark-paid', [AdminOrderController::class, 'markPaid']);
         Route::post('/orders/{id}/retry-delivery', [AdminOrderController::class, 'retryDelivery']);
         Route::get('/orders/delivery-failed', [AdminOrderController::class, 'deliveryFailed']);
+        Route::post('/orders/{id}/refund-wallet', [AdminOrderController::class, 'refundWallet']);
 
         // Payment Methods (Admin)
         Route::get('/payment-methods', [AdminPaymentMethodController::class, 'index']);
@@ -75,9 +83,9 @@ Route::prefix('v1')->group(function () {
 
         Route::get('/products', [AdminProductController::class, 'index']);
         Route::post('/products', [AdminProductController::class, 'store']);
-        Route::get('/products/{id}', [AdminProductController::class, 'show']);
-        Route::put('/products/{id}', [AdminProductController::class, 'update']);
-        Route::delete('/products/{id}', [AdminProductController::class, 'destroy']);
+        Route::get('/products/{id}', [AdminProductController::class, 'show'])->whereNumber('id');
+        Route::put('/products/{id}', [AdminProductController::class, 'update'])->whereNumber('id');
+        Route::delete('/products/{id}', [AdminProductController::class, 'destroy'])->whereNumber('id');
 
         Route::get('/product-prices', [AdminProductPriceController::class, 'index']);
         Route::post('/product-prices', [AdminProductPriceController::class, 'store']);
@@ -96,6 +104,53 @@ Route::prefix('v1')->group(function () {
         Route::get('/banners/{id}', [AdminBannerController::class, 'show']);
         Route::put('/banners/{id}', [AdminBannerController::class, 'update']);
         Route::delete('/banners/{id}', [AdminBannerController::class, 'destroy']);
+
+        // Digital Pins Inventory
+        Route::get('/digital-pins', [AdminDigitalPinController::class, 'index']);
+        Route::get('/digital-pins/stock', [AdminDigitalPinController::class, 'stock']);
+        Route::post('/digital-pins/bulk', [AdminDigitalPinController::class, 'bulkStore']);
+
+        // Provider Integrations (API + Inventory)
+        Route::get('/provider-templates', [AdminProviderIntegrationController::class, 'templates']);
+        Route::get('/provider-integrations', [AdminProviderIntegrationController::class, 'index']);
+        Route::post('/provider-integrations', [AdminProviderIntegrationController::class, 'store']);
+        Route::get('/provider-integrations/{id}', [AdminProviderIntegrationController::class, 'show']);
+        Route::put('/provider-integrations/{id}', [AdminProviderIntegrationController::class, 'update']);
+        Route::delete('/provider-integrations/{id}', [AdminProviderIntegrationController::class, 'destroy']);
+
+        // Tweet-Pin Provider helpers
+        Route::get('/provider-integrations/{id}/tweetpin/profile', [AdminTweetPinController::class, 'profile']);
+        Route::get('/provider-integrations/{id}/tweetpin/products', [AdminTweetPinController::class, 'products']);
+        Route::get('/provider-integrations/{id}/tweetpin/content/{parentId}', [AdminTweetPinController::class, 'content']);
+        Route::get('/provider-integrations/{id}/tweetpin/check', [AdminTweetPinController::class, 'check']);
+
+        // Phase 7: Tweet-Pin mapping helper
+        Route::put('/products/{id}/tweetpin/mapping', [AdminTweetPinMappingController::class, 'update'])->whereNumber('id');
+
+        // Pricing Tiers (Price Groups)
+        Route::get('/price-groups', [AdminPriceGroupController::class, 'index']);
+        Route::post('/price-groups', [AdminPriceGroupController::class, 'store']);
+        Route::get('/price-groups/{id}', [AdminPriceGroupController::class, 'show'])->whereNumber('id');
+        Route::put('/price-groups/{id}', [AdminPriceGroupController::class, 'update'])->whereNumber('id');
+        Route::delete('/price-groups/{id}', [AdminPriceGroupController::class, 'destroy'])->whereNumber('id');
+
+        // Product Catalog helpers
+        Route::put('/products/order', [AdminProductController::class, 'updateOrder']);
+        Route::put('/products/bulk-provider', [AdminProductController::class, 'bulkProvider']);
+    });
+
+    // Public Catalog (عملة افتراضية TRY + يدعم قراءة عملة المستخدم إذا أرسل Bearer token)
+    Route::middleware(['currency.resolve', 'price.group'])->group(function () {
+
+        // Home (endpoint واحد ممتاز للفلاتر)
+        Route::get('/home', [CatalogController::class, 'home']);
+
+        // Catalog
+        Route::get('/categories', [CatalogController::class, 'categories']);
+        Route::get('/banners', [CatalogController::class, 'banners']);
+        Route::get('/products', [CatalogController::class, 'products']);
+        Route::get('/products/featured', [CatalogController::class, 'featured']);
+        Route::get('/products/{id}', [CatalogController::class, 'product'])->whereNumber('id');
     });
 
     // User protected (بدون user.currency)
@@ -108,18 +163,8 @@ Route::prefix('v1')->group(function () {
         Route::middleware('throttle:auth')->post('/auth/logout', [AuthController::class, 'logout']);
         Route::middleware('throttle:auth')->post('/auth/refresh', [AuthController::class, 'refresh']);
 
-        // كل ما تحتها يحتاج user.currency
-        Route::middleware(['user.currency'])->group(function () {
-
-            // Home (endpoint واحد ممتاز للفلاتر)
-            Route::get('/home', [CatalogController::class, 'home']);
-
-            // Catalog
-            Route::get('/categories', [CatalogController::class, 'categories']);
-            Route::get('/banners', [CatalogController::class, 'banners']);
-            Route::get('/products', [CatalogController::class, 'products']);
-            Route::get('/products/featured', [CatalogController::class, 'featured']);
-            Route::get('/products/{id}', [CatalogController::class, 'product']);
+        // كل ما تحتها يحتاج user.currency (للشراء/المدفوعات/المحفظة)
+        Route::middleware(['user.currency', 'price.group'])->group(function () {
 
             // Payment Methods (User)
             Route::get('/payment-methods', [PaymentMethodController::class, 'index']);

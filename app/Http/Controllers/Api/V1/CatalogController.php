@@ -18,6 +18,8 @@ class CatalogController extends Controller
     public function home()
     {
         $currency = app('user_currency');
+        $priceGroupId = app()->bound('price_group_id') ? (int) app('price_group_id') : 1;
+        if ($priceGroupId <= 0) $priceGroupId = 1;
 
         $categories = Category::query()
             ->where('is_active', true)
@@ -44,10 +46,10 @@ class CatalogController extends Controller
 
         // priceFor حسب العملة
         $featuredQ->with([
-            'priceFor' => fn ($x) => $x->where('currency', $currency)->where('is_active', true),
+            'priceFor' => fn ($x) => $x->where('currency', $currency)->where('price_group_id', $priceGroupId)->where('is_active', true),
             'priceFor.packages' => fn ($x) => $x->where('is_active', true)->orderBy('sort_order'),
             'priceFor.packages.productPrice',
-        ])->whereHas('prices', fn ($x) => $x->where('currency', $currency)->where('is_active', true));
+        ])->whereHas('prices', fn ($x) => $x->where('currency', $currency)->where('price_group_id', $priceGroupId)->where('is_active', true));
 
         $featured = $featuredQ->get();
 
@@ -88,6 +90,8 @@ class CatalogController extends Controller
     public function products()
     {
         $currency = app('user_currency');
+        $priceGroupId = app()->bound('price_group_id') ? (int) app('price_group_id') : 1;
+        if ($priceGroupId <= 0) $priceGroupId = 1;
 
         $limit = (int) request('limit', 20);
         $limit = $limit > 0 ? min($limit, 100) : 20;
@@ -116,10 +120,10 @@ class CatalogController extends Controller
 
         // user: سعر واحد حسب عملته + packages
         $q->with([
-            'priceFor' => fn ($x) => $x->where('currency', $currency)->where('is_active', true),
+            'priceFor' => fn ($x) => $x->where('currency', $currency)->where('price_group_id', $priceGroupId)->where('is_active', true),
             'priceFor.packages' => fn ($x) => $x->where('is_active', true)->orderBy('sort_order'),
             'priceFor.packages.productPrice',
-        ])->whereHas('prices', fn ($x) => $x->where('currency', $currency)->where('is_active', true));
+        ])->whereHas('prices', fn ($x) => $x->where('currency', $currency)->where('price_group_id', $priceGroupId)->where('is_active', true));
 
         $p = $q->paginate($limit);
 
@@ -132,6 +136,8 @@ class CatalogController extends Controller
     public function featured()
     {
         $currency = app('user_currency');
+        $priceGroupId = app()->bound('price_group_id') ? (int) app('price_group_id') : 1;
+        if ($priceGroupId <= 0) $priceGroupId = 1;
 
         $limit = (int) request('limit', 20);
         $limit = $limit > 0 ? min($limit, 50) : 20;
@@ -143,10 +149,10 @@ class CatalogController extends Controller
             ->limit($limit);
 
         $q->with([
-            'priceFor' => fn ($x) => $x->where('currency', $currency)->where('is_active', true),
+            'priceFor' => fn ($x) => $x->where('currency', $currency)->where('price_group_id', $priceGroupId)->where('is_active', true),
             'priceFor.packages' => fn ($x) => $x->where('is_active', true)->orderBy('sort_order'),
             'priceFor.packages.productPrice',
-        ])->whereHas('prices', fn ($x) => $x->where('currency', $currency)->where('is_active', true));
+        ])->whereHas('prices', fn ($x) => $x->where('currency', $currency)->where('price_group_id', $priceGroupId)->where('is_active', true));
 
         return $this->ok(ProductResource::collection($q->get()));
     }
@@ -154,12 +160,14 @@ class CatalogController extends Controller
     public function product($id)
     {
         $currency = app('user_currency');
+        $priceGroupId = app()->bound('price_group_id') ? (int) app('price_group_id') : 1;
+        if ($priceGroupId <= 0) $priceGroupId = 1;
 
         $product = Product::query()
             ->where('id', $id)
             ->where('is_active', true)
             ->with([
-                'priceFor' => fn ($x) => $x->where('currency', $currency)->where('is_active', true),
+                'priceFor' => fn ($x) => $x->where('currency', $currency)->where('price_group_id', $priceGroupId)->where('is_active', true),
                 'priceFor.packages' => fn ($x) => $x->where('is_active', true)->orderBy('sort_order'),
                 'priceFor.packages.productPrice',
             ])

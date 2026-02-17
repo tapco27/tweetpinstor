@@ -4,20 +4,19 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
-class FulfillmentRequest extends Model
+class ProductProviderSlot extends Model
 {
     protected $guarded = [];
 
     protected $casts = [
-        'http_status' => 'integer',
         'slot' => 'integer',
-        'request_payload' => 'array',
-        'response_payload' => 'array',
+        'is_active' => 'boolean',
+        'override_config' => 'array',
     ];
 
-    public function order()
+    public function product()
     {
-        return $this->belongsTo(Order::class);
+        return $this->belongsTo(Product::class);
     }
 
     public function integration()

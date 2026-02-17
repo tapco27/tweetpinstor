@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Jobs\DeliverOrderJob;
 use App\Models\Order;
+use App\Services\WalletService;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class AdminOrderController extends Controller
@@ -132,5 +134,31 @@ class AdminOrderController extends Controller
             ->with(['items', 'delivery'])
             ->orderByDesc('id')
             ->paginate(50);
+    }
+
+    /**
+     * Refund a wallet-paid order back to user's wallet.
+     *
+     * POST /v1/admin/orders/{id}/refund-wallet
+     */
+    public function refundWallet($id, Request $r, WalletService $wallets)
+    {
+        $data = $r->validate([
+            'reason' => ['nullable', 'string', 'max:500'],
+        ]);
+
+        $adminId = (int) auth('api')->id();
+
+        $result = $wallets->refundWalletOrder((int) $id, $adminId, $data['reason'] ?? null);
+
+        $order = Order::query()
+            ->with(['items.product', 'items.package', 'delivery'])
+            ->findOrFail((int) $id);
+
+        return response()->json([
+            'message' => 'Refund posted',
+            'order' => $order,
+            'walletTransaction' => $result['transaction'] ?? null,
+        ]);
     }
 }

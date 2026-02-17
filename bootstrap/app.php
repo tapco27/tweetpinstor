@@ -22,6 +22,8 @@ $app = Application::configure(basePath: dirname(__DIR__))
         // ✅ Alias للـ middleware
         $middleware->alias([
             'user.currency' => \App\Http\Middleware\EnforceUserCurrency::class,
+            'currency.resolve' => \App\Http\Middleware\ResolveCurrency::class,
+            'price.group' => \App\Http\Middleware\ResolvePriceGroup::class,
             'admin' => \App\Http\Middleware\RequireAdmin::class,
         ]);
 

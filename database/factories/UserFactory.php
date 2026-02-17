@@ -29,7 +29,9 @@ class UserFactory extends Factory
             'email_verified_at' => now(),
             'password' => static::$password ??= Hash::make('password'),
             'remember_token' => Str::random(10),
-            'currency' => 'TRY,SYP',
+            // Default currency for seeded/fake users.
+            // (Bugfix) must be a valid ISO-4217 3-letter code.
+            'currency' => 'TRY',
             'currency_selected_at' => now(),
         ];
     }

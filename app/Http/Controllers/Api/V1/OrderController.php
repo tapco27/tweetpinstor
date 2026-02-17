@@ -84,7 +84,7 @@ class OrderController extends Controller
 
     #[BodyParameter(
         name: 'metadata',
-        description: 'Key-value object. Must include category requirement_key (uid/player_id/email/phone) when required.',
+        description: 'Key-value object. Must include category requiredFields (e.g. uid/player_id/email/phone/wallet_id) when required.',
         required: false,
         type: 'object',
         infer: false,
@@ -94,6 +94,8 @@ class OrderController extends Controller
     {
         $user = auth('api')->user();
         $currency = app('user_currency');
+        $priceGroupId = app()->bound('price_group_id') ? (int) app('price_group_id') : 1;
+        if ($priceGroupId <= 0) $priceGroupId = 1;
 
         if (!$currency) {
             return $this->fail('Currency not set', 422);
@@ -121,6 +123,7 @@ class OrderController extends Controller
         $price = ProductPrice::query()
             ->where('product_id', $product->id)
             ->where('currency', $currency)
+            ->where('price_group_id', $priceGroupId)
             ->where('is_active', true)
             ->firstOrFail();
 
