@@ -23,6 +23,9 @@ use App\Http\Controllers\Api\V1\Admin\AdminProviderIntegrationController;
 use App\Http\Controllers\Api\V1\Admin\AdminPriceGroupController;
 use App\Http\Controllers\Api\V1\Admin\AdminTweetPinController;
 use App\Http\Controllers\Api\V1\Admin\AdminTweetPinMappingController;
+use App\Http\Controllers\Api\V1\Admin\AdminFxRateController;
+use App\Http\Controllers\Api\V1\Admin\AdminUsdPricingController;
+use App\Http\Controllers\Api\V1\Admin\AdminPricingController;
 
 // Admin Wallet/Payment Methods
 use App\Http\Controllers\Api\V1\Admin\AdminPaymentMethodController;
@@ -133,6 +136,18 @@ Route::prefix('v1')->group(function () {
         Route::get('/price-groups/{id}', [AdminPriceGroupController::class, 'show'])->whereNumber('id');
         Route::put('/price-groups/{id}', [AdminPriceGroupController::class, 'update'])->whereNumber('id');
         Route::delete('/price-groups/{id}', [AdminPriceGroupController::class, 'destroy'])->whereNumber('id');
+
+        // FX Rates + USD Pricing
+        Route::get('/fx-rates', [AdminFxRateController::class, 'index']);
+        Route::put('/fx-rates', [AdminFxRateController::class, 'update']);
+        Route::put('/products/{id}/usd-pricing', [AdminUsdPricingController::class, 'updateProduct'])->whereNumber('id');
+        Route::put('/packages/{id}/usd-pricing', [AdminUsdPricingController::class, 'updatePackage'])->whereNumber('id');
+
+        // Pricing Matrix (Price Groups / Pricing Tiers)
+        Route::get('/pricing/grid', [AdminPricingController::class, 'grid']);
+        Route::post('/pricing/recalculate-usd', [AdminPricingController::class, 'recalculateUsd']);
+        Route::post('/pricing/batch-update-tier', [AdminPricingController::class, 'batchUpdateTier']);
+        Route::post('/pricing/batch-update-usd', [AdminPricingController::class, 'batchUpdateUsd']);
 
         // Product Catalog helpers
         Route::put('/products/order', [AdminProductController::class, 'updateOrder']);

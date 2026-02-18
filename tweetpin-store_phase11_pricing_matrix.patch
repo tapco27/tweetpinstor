@@ -1,0 +1,159 @@
+diff --git a/app/Http/Controllers/Api/V1/Admin/AdminProductPriceController.php b/app/Http/Controllers/Api/V1/Admin/AdminProductPriceController.php
+index fa6b4f7..651bcc6 100644
+--- a/app/Http/Controllers/Api/V1/Admin/AdminProductPriceController.php
++++ b/app/Http/Controllers/Api/V1/Admin/AdminProductPriceController.php
+@@ -32,6 +32,7 @@ public function store(Request $r)
+             'currency' => ['required','in:TRY,SYP'],
+             'minor_unit' => ['required','integer','in:0,2'],
+             'unit_price_minor' => ['nullable','integer','min:0'],
++            'unit_price_usd' => ['nullable','numeric','min:0'],
+             'min_qty' => ['nullable','integer','min:1'],
+             'max_qty' => ['nullable','integer','min:1'],
+             'is_active' => ['nullable','boolean'],
+@@ -53,6 +54,7 @@ public function update(Request $r, $id)
+             'currency' => ['sometimes','in:TRY,SYP'],
+             'minor_unit' => ['sometimes','integer','in:0,2'],
+             'unit_price_minor' => ['sometimes','nullable','integer','min:0'],
++            'unit_price_usd' => ['sometimes','nullable','numeric','min:0'],
+             'min_qty' => ['sometimes','nullable','integer','min:1'],
+             'max_qty' => ['sometimes','nullable','integer','min:1'],
+             'is_active' => ['sometimes','boolean'],
+diff --git a/app/Http/Controllers/Api/V1/Admin/AdminUsdPricingController.php b/app/Http/Controllers/Api/V1/Admin/AdminUsdPricingController.php
+index a1d390b..8842a7a 100644
+--- a/app/Http/Controllers/Api/V1/Admin/AdminUsdPricingController.php
++++ b/app/Http/Controllers/Api/V1/Admin/AdminUsdPricingController.php
+@@ -31,7 +31,7 @@ public function updateProduct(Request $r, $id)
+ 
+     public function updatePackage(Request $r, $id)
+     {
+-        $package = ProductPackage::query()->findOrFail((int) $id);
++        $package = ProductPackage::query()->with('productPrice')->findOrFail((int) $id);
+ 
+         $data = $r->validate([
+             'cost_usd' => ['nullable', 'numeric', 'min:0'],
+@@ -42,6 +42,30 @@ public function updatePackage(Request $r, $id)
+         $package->suggested_usd = $data['suggested_usd'] ?? null;
+         $package->save();
+ 
++        // Propagate to all cloned packages across price groups/currencies for the same product.
++        // (We don't have a separate "package variant" table yet, so we match by value_label when possible.)
++        $productId = (int) ($package->productPrice?->product_id ?? 0);
++        $fingerprintValue = trim((string) ($package->value_label ?? ''));
++
++        if ($productId > 0) {
++            $q = ProductPackage::query()
++                ->whereHas('productPrice', fn ($x) => $x->where('product_id', $productId));
++
++            if ($fingerprintValue !== '') {
++                $q->where('value_label', $fingerprintValue);
++            } else {
++                // fallback match
++                $q->where('sort_order', (int) $package->sort_order)
++                  ->where('name_ar', (string) $package->name_ar);
++            }
++
++            $q->update([
++                'cost_usd' => $package->cost_usd,
++                'suggested_usd' => $package->suggested_usd,
++                'updated_at' => now(),
++            ]);
++        }
++
+         return response()->json([
+             'data' => ['package' => $package->fresh()],
+         ]);
+diff --git a/app/Models/ProductPrice.php b/app/Models/ProductPrice.php
+index b1b9e96..fee3abe 100644
+--- a/app/Models/ProductPrice.php
++++ b/app/Models/ProductPrice.php
+@@ -10,6 +10,7 @@ class ProductPrice extends Model
+ 
+   protected $casts = [
+     'is_active' => 'boolean',
++    'unit_price_usd' => 'string',
+   ];
+ 
+   public function product(){ return $this->belongsTo(Product::class); }
+diff --git a/app/Services/PricingService.php b/app/Services/PricingService.php
+index 5606692..e7a1d75 100644
+--- a/app/Services/PricingService.php
++++ b/app/Services/PricingService.php
+@@ -2,6 +2,7 @@
+ 
+ namespace App\Services;
+ 
++use App\Models\FxRate;
+ use App\Models\Product;
+ use App\Models\ProductPrice;
+ use App\Models\ProductPackage;
+@@ -20,12 +21,43 @@ public function calculateLine(Product $product, ProductPrice $price, ?ProductPac
+     }
+ 
+     // flexible_quantity
+-    $unit = (int)$price->unit_price_minor;
+-    if ($unit <= 0) throw new \InvalidArgumentException('Invalid unit price');
+     if ($price->min_qty !== null && $quantity < $price->min_qty) throw new \InvalidArgumentException('Quantity below min');
+     if ($price->max_qty !== null && $quantity > $price->max_qty) throw new \InvalidArgumentException('Quantity above max');
+ 
++    // ✅ USD-based flexible products: compute total from USD to avoid "unit price rounds to 0" issues.
++    if ((string) ($product->currency_mode ?? 'TRY') === 'USD') {
++      $usdUnit = $price->unit_price_usd ?? $product->suggested_unit_usd;
++      if ($usdUnit !== null) {
++        $fx = $this->fxRateOrFail((string) $price->currency);
++        $minorUnit = (int) ($price->minor_unit ?? (int) config('money.minor_units.' . strtoupper((string) $price->currency), 2));
++        $scale = $minorUnit > 0 ? (10 ** $minorUnit) : 1;
++
++        $unitMinor = (int) round(((float) $usdUnit) * $fx * $scale);
++        $totalMinor = (int) round(((float) $usdUnit) * $fx * $scale * $quantity);
++        if ($totalMinor < 0) {
++          throw new \InvalidArgumentException('Invalid total price');
++        }
++
++        return ['unit_price_minor' => $unitMinor, 'quantity' => $quantity, 'total_price_minor' => $totalMinor];
++      }
++      // If USD mode but USD unit price missing: fall back to stored unit_price_minor (if any)
++    }
++
++    $unit = (int)$price->unit_price_minor;
++    if ($unit <= 0) throw new \InvalidArgumentException('Invalid unit price');
++
+     $total = $unit * $quantity;
+     return ['unit_price_minor' => $unit, 'quantity' => $quantity, 'total_price_minor' => $total];
+   }
++
++  private function fxRateOrFail(string $quoteCurrency): float
++  {
++    $quoteCurrency = strtoupper($quoteCurrency);
++    $pair = 'USD_' . $quoteCurrency;
++    $rate = FxRate::query()->where('pair', $pair)->value('rate');
++    if ($rate === null) {
++      throw new \InvalidArgumentException('FX rate not set: ' . $pair);
++    }
++    return (float) $rate;
++  }
+ }
+diff --git a/routes/api.php b/routes/api.php
+index 2256ff7..a783299 100644
+--- a/routes/api.php
++++ b/routes/api.php
+@@ -25,6 +25,7 @@
+ use App\Http\Controllers\Api\V1\Admin\AdminTweetPinMappingController;
+ use App\Http\Controllers\Api\V1\Admin\AdminFxRateController;
+ use App\Http\Controllers\Api\V1\Admin\AdminUsdPricingController;
++use App\Http\Controllers\Api\V1\Admin\AdminPricingController;
+ 
+ // Admin Wallet/Payment Methods
+ use App\Http\Controllers\Api\V1\Admin\AdminPaymentMethodController;
+@@ -142,6 +143,12 @@
+         Route::put('/products/{id}/usd-pricing', [AdminUsdPricingController::class, 'updateProduct'])->whereNumber('id');
+         Route::put('/packages/{id}/usd-pricing', [AdminUsdPricingController::class, 'updatePackage'])->whereNumber('id');
+ 
++        // Pricing Matrix (Price Groups / Pricing Tiers)
++        Route::get('/pricing/grid', [AdminPricingController::class, 'grid']);
++        Route::post('/pricing/recalculate-usd', [AdminPricingController::class, 'recalculateUsd']);
++        Route::post('/pricing/batch-update-tier', [AdminPricingController::class, 'batchUpdateTier']);
++        Route::post('/pricing/batch-update-usd', [AdminPricingController::class, 'batchUpdateUsd']);
++
+         // Product Catalog helpers
+         Route::put('/products/order', [AdminProductController::class, 'updateOrder']);
+         Route::put('/products/bulk-provider', [AdminProductController::class, 'bulkProvider']);
