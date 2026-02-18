@@ -25,6 +25,7 @@ trait ApiResponse
         }
 
         return response()->json([
+            'success' => true,
             'data' => $data,
             'meta' => $meta ?: (object)[],
             'errors' => null,
@@ -39,6 +40,7 @@ trait ApiResponse
         }
 
         return response()->json([
+            'success' => false,
             'data' => null,
             'meta' => $meta ?: (object)[],
             'errors' => [

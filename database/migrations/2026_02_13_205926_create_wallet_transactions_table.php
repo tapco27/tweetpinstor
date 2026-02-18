@@ -35,10 +35,13 @@ return new class extends Migration {
             $table->unique(['wallet_id', 'reference_type', 'reference_id', 'direction', 'type'], 'wallet_tx_unique_ref');
         });
 
-        DB::statement("ALTER TABLE wallet_transactions ADD CONSTRAINT wallet_tx_direction_chk CHECK (direction IN ('credit','debit'))");
-        DB::statement("ALTER TABLE wallet_transactions ADD CONSTRAINT wallet_tx_status_chk CHECK (status IN ('pending','posted','reversed'))");
-        DB::statement("ALTER TABLE wallet_transactions ADD CONSTRAINT wallet_tx_amount_pos_chk CHECK (amount_minor > 0)");
-        DB::statement("ALTER TABLE wallet_transactions ADD CONSTRAINT wallet_tx_balance_nonneg_chk CHECK (balance_after_minor IS NULL OR balance_after_minor >= 0)");
+        // PostgreSQL-only constraints (SQLite tests / MySQL compatibility)
+        if (DB::getDriverName() === 'pgsql') {
+            DB::statement("ALTER TABLE wallet_transactions ADD CONSTRAINT wallet_tx_direction_chk CHECK (direction IN ('credit','debit'))");
+            DB::statement("ALTER TABLE wallet_transactions ADD CONSTRAINT wallet_tx_status_chk CHECK (status IN ('pending','posted','reversed'))");
+            DB::statement("ALTER TABLE wallet_transactions ADD CONSTRAINT wallet_tx_amount_pos_chk CHECK (amount_minor > 0)");
+            DB::statement("ALTER TABLE wallet_transactions ADD CONSTRAINT wallet_tx_balance_nonneg_chk CHECK (balance_after_minor IS NULL OR balance_after_minor >= 0)");
+        }
     }
 
     public function down(): void

@@ -19,7 +19,7 @@ class RegisterRequest extends FormRequest
             'password' => ['required', 'string', 'min:8', 'confirmed'],
 
             // Optional: if provided must be TRY or SYP
-            'currency' => ['sometimes', 'nullable', 'in:TRY,SYP'],
+            'currency' => ['nullable', 'in:TRY,SYP'],
         ];
     }
 }

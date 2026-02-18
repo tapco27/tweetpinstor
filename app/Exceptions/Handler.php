@@ -74,12 +74,23 @@ class Handler extends ExceptionHandler
 
             // Validation
             if ($e instanceof ValidationException) {
-                return $this->apiFail(
-                    $request,
-                    'Validation error',
-                    422,
-                    $e->errors()
-                );
+                // Backward compatible shape:
+                // - Keep errors.message + errors.details (existing clients)
+                // - Also flatten field errors at the same level under "errors" so
+                //   Laravel's assertJsonValidationErrors() works with default responseKey="errors".
+                $fieldErrors = $e->errors();
+
+                return response()->json([
+                    'data' => null,
+                    'meta' => $this->apiMeta($request),
+                    'errors' => array_merge(
+                        [
+                            'message' => 'Validation error',
+                            'details' => $fieldErrors,
+                        ],
+                        $fieldErrors,
+                    ),
+                ], 422);
             }
 
             // Throttle / Rate limit

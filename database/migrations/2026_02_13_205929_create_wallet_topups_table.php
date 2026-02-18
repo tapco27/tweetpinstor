@@ -45,9 +45,12 @@ return new class extends Migration {
             $table->index(['user_id', 'status', 'created_at']);
         });
 
-        DB::statement("ALTER TABLE wallet_topups ADD CONSTRAINT wallet_topups_currency_chk CHECK (currency IN ('TRY','SYP'))");
-        DB::statement("ALTER TABLE wallet_topups ADD CONSTRAINT wallet_topups_amount_pos_chk CHECK (amount_minor > 0)");
-        DB::statement("ALTER TABLE wallet_topups ADD CONSTRAINT wallet_topups_status_chk CHECK (status IN ('pending_review','approved','rejected','posted','failed','canceled'))");
+        // PostgreSQL-only constraints (SQLite tests / MySQL compatibility)
+        if (DB::getDriverName() === 'pgsql') {
+            DB::statement("ALTER TABLE wallet_topups ADD CONSTRAINT wallet_topups_currency_chk CHECK (currency IN ('TRY','SYP'))");
+            DB::statement("ALTER TABLE wallet_topups ADD CONSTRAINT wallet_topups_amount_pos_chk CHECK (amount_minor > 0)");
+            DB::statement("ALTER TABLE wallet_topups ADD CONSTRAINT wallet_topups_status_chk CHECK (status IN ('pending_review','approved','rejected','posted','failed','canceled'))");
+        }
     }
 
     public function down(): void

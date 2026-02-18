@@ -21,8 +21,11 @@ return new class extends Migration {
             $table->index('currency');
         });
 
-        DB::statement("ALTER TABLE wallets ADD CONSTRAINT wallets_currency_chk CHECK (currency IN ('TRY','SYP'))");
-        DB::statement("ALTER TABLE wallets ADD CONSTRAINT wallets_balance_nonneg_chk CHECK (balance_minor >= 0)");
+        // PostgreSQL-only constraints (SQLite tests / MySQL compatibility)
+        if (DB::getDriverName() === 'pgsql') {
+            DB::statement("ALTER TABLE wallets ADD CONSTRAINT wallets_currency_chk CHECK (currency IN ('TRY','SYP'))");
+            DB::statement("ALTER TABLE wallets ADD CONSTRAINT wallets_balance_nonneg_chk CHECK (balance_minor >= 0)");
+        }
     }
 
     public function down(): void

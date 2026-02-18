@@ -108,9 +108,10 @@ class AdminPricingController extends Controller
                             continue;
                         }
 
-                        $pair = 'USD_' . strtoupper((string) $price->currency);
-                        $fx = $rates->get($pair)?->rate;
+                        $currency = strtoupper((string) $price->currency);
+                        $pair = 'USD_' . $currency;
 
+                        $fx = $rates->get($pair)?->rate;
                         if ($fx === null) {
                             $errors[] = [
                                 'type' => 'product_price',
@@ -121,10 +122,10 @@ class AdminPricingController extends Controller
                             continue;
                         }
 
-                        $minorUnit = (int) ($price->minor_unit ?? 2);
-                        $minorUnit = $minorUnit > 0 ? $minorUnit : 2;
-
+                        // ✅ SYP minor_unit = 0 (لازم نسمح 0)
+                        $minorUnit = $this->resolveMinorUnit($price->minor_unit, $currency);
                         $scale = 10 ** $minorUnit;
+
                         $newMinor = (int) round(((float) $usd) * ((float) $fx) * $scale);
 
                         if ((int) $price->unit_price_minor !== $newMinor) {
@@ -200,10 +201,10 @@ class AdminPricingController extends Controller
                             continue;
                         }
 
-                        $minorUnit = (int) ($pp->minor_unit ?? 2);
-                        $minorUnit = $minorUnit > 0 ? $minorUnit : 2;
-
+                        // ✅ SYP minor_unit = 0 (لازم نسمح 0)
+                        $minorUnit = $this->resolveMinorUnit($pp->minor_unit, $currency);
                         $scale = 10 ** $minorUnit;
+
                         $newMinor = (int) round(((float) $usd) * ((float) $fx) * $scale);
 
                         if ((int) $package->price_minor !== $newMinor) {
@@ -384,6 +385,24 @@ class AdminPricingController extends Controller
         return response()->json(
             $this->payload($this->snapshotByIds($data['target'], $ids), $affected, $errors)
         );
+    }
+
+    private function resolveMinorUnit($minorUnit, string $currency): int
+    {
+        $currency = strtoupper((string) $currency);
+
+        // default by currency
+        if ($minorUnit === null) {
+            return $currency === 'SYP' ? 0 : 2;
+        }
+
+        $mu = (int) $minorUnit;
+        if ($mu < 0 || $mu > 6) {
+            return $currency === 'SYP' ? 0 : 2;
+        }
+
+        // ✅ المهم: نسمح 0
+        return $mu;
     }
 
     private function applyTierAction(int $old, string $action, float $value): int

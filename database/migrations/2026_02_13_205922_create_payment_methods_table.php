@@ -26,10 +26,13 @@ return new class extends Migration {
             $table->index(['type', 'scope', 'currency', 'is_active']);
         });
 
-        // (اختياري) check constraints على PostgreSQL
-        DB::statement("ALTER TABLE payment_methods ADD CONSTRAINT payment_methods_type_chk CHECK (type IN ('manual','gateway'))");
-        DB::statement("ALTER TABLE payment_methods ADD CONSTRAINT payment_methods_scope_chk CHECK (scope IN ('topup','order','both'))");
-        DB::statement("ALTER TABLE payment_methods ADD CONSTRAINT payment_methods_currency_chk CHECK (currency IS NULL OR currency IN ('TRY','SYP'))");
+        // (اختياري) check constraints على PostgreSQL فقط.
+        // SQLite (اختبارات) و MySQL لا يدعمون صيغة "ALTER TABLE ... ADD CONSTRAINT" بهذه الطريقة.
+        if (DB::getDriverName() === 'pgsql') {
+            DB::statement("ALTER TABLE payment_methods ADD CONSTRAINT payment_methods_type_chk CHECK (type IN ('manual','gateway'))");
+            DB::statement("ALTER TABLE payment_methods ADD CONSTRAINT payment_methods_scope_chk CHECK (scope IN ('topup','order','both'))");
+            DB::statement("ALTER TABLE payment_methods ADD CONSTRAINT payment_methods_currency_chk CHECK (currency IS NULL OR currency IN ('TRY','SYP'))");
+        }
     }
 
     public function down(): void

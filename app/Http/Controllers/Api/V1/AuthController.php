@@ -42,6 +42,7 @@ class AuthController extends Controller
             $user->email = (string) $request->input('email');
             $user->password = Hash::make((string) $request->input('password'));
 
+            // currency اختياري
             if ($currency && in_array($currency, ['TRY', 'SYP'], true)) {
                 $user->currency = $currency;
                 $user->currency_selected_at = now();
