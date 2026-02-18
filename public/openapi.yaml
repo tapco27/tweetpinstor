@@ -47,25 +47,21 @@ components:
     TokenResponse:
       type: object
       properties:
-        access_token: { type: string, example: "eyJhbGciOi..." }
-        token_type: { type: string, example: "Bearer" }
-        expires_in: { type: integer, example: 3600 }
+        token: { type: string, example: "eyJhbGciOi..." }
+        tokenType: { type: string, example: "bearer" }
+        expiresIn: { type: integer, example: 3600 }
+        needsCurrencySelection: { type: boolean, example: true }
         user:
           $ref: "#/components/schemas/User"
 
     RegisterRequest:
       type: object
-      required: [name, email, password, password_confirmation, currency]
+      required: [name, email, password, password_confirmation]
       properties:
         name: { type: string, example: "Muhammed" }
         email: { type: string, format: email, example: "user@example.com" }
         password: { type: string, format: password, minLength: 8, example: "P@ssw0rd!" }
         password_confirmation: { type: string, format: password, example: "P@ssw0rd!" }
-        currency:
-          type: string
-          enum: [TRY, SYP]
-          example: SYP
-
     LoginRequest:
       type: object
       required: [email, password]
@@ -289,6 +285,47 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/User" }
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/me/currency:
+    post:
+      tags: [Auth]
+      summary: Set user currency once (immutable)
+      operationId: authSetCurrency
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currency]
+              properties:
+                currency:
+                  type: string
+                  enum: [TRY, SYP]
+                  example: TRY
+      responses:
+        "200":
+          description: Currency selected
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "409":
+          description: Currency already set
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "422":
+          description: Validation error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
         "401":
           description: Unauthorized
           content:

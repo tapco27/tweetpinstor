@@ -3,8 +3,8 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\Api\V1\RegisterRequest;
 use App\Http\Requests\Api\V1\LoginRequest;
+use App\Http\Requests\Api\V1\RegisterRequest;
 use App\Http\Requests\Api\V1\SocialLoginRequest;
 use App\Http\Resources\UserResource;
 use App\Models\SocialAccount;
@@ -23,26 +23,39 @@ class AuthController extends Controller
     use ApiResponse;
 
     /**
+     * Email/password register
+     * - currency OPTIONAL (TRY|SYP)
+     * - wallet created ONLY if currency was selected
+     *
      * @unauthenticated
      */
     public function register(RegisterRequest $request)
     {
-        $user = DB::transaction(function () use ($request) {
-            $user = new User();
-            $user->name = $request->name;
-            $user->email = $request->email;
-            $user->password = Hash::make($request->password);
+        $currency = null;
+        if ($request->filled('currency')) {
+            $currency = strtoupper((string) $request->input('currency'));
+        }
 
-            $user->currency = strtoupper($request->currency);
-            $user->currency_selected_at = now();
+        $user = DB::transaction(function () use ($request, $currency) {
+            $user = new User();
+            $user->name = (string) $request->input('name');
+            $user->email = (string) $request->input('email');
+            $user->password = Hash::make((string) $request->input('password'));
+
+            if ($currency && in_array($currency, ['TRY', 'SYP'], true)) {
+                $user->currency = $currency;
+                $user->currency_selected_at = now();
+            }
 
             $user->save();
 
-            // إنشاء Wallet مباشرة بعد إنشاء المستخدم
-            $user->wallet()->create([
-                'currency' => $user->currency,
-                'balance_minor' => 0,
-            ]);
+            // Wallet فقط إذا العملة موجودة
+            if (!empty($user->currency)) {
+                Wallet::firstOrCreate(
+                    ['user_id' => $user->id],
+                    ['currency' => $user->currency, 'balance_minor' => 0]
+                );
+            }
 
             return $user;
         });
@@ -64,7 +77,8 @@ class AuthController extends Controller
     public function login(LoginRequest $request)
     {
         $credentials = $request->only('email', 'password');
-        if (!$token = auth('api')->attempt($credentials)) {
+
+        if (! $token = auth('api')->attempt($credentials)) {
             return $this->fail('Invalid credentials', 401);
         }
 
@@ -130,9 +144,11 @@ class AuthController extends Controller
         $emailVerified = (bool) ($info['email_verified'] ?? false);
         $payload = is_array($info['payload'] ?? null) ? $info['payload'] : null;
 
+        $emailWasMissing = !$email;
+
         try {
             $user = DB::transaction(function () use ($provider, $providerUserId, $email, $name, $emailVerified, $payload) {
-                // 1) If social account exists -> return its user
+                // 1) إذا الحساب الاجتماعي موجود -> رجّع اليوزر
                 $account = SocialAccount::query()
                     ->where('provider', $provider)
                     ->where('provider_user_id', $providerUserId)
@@ -140,42 +156,55 @@ class AuthController extends Controller
                     ->first();
 
                 if ($account && $account->user) {
+                    // Enrich email verification (اختياري)
+                    if ($email && $emailVerified && empty($account->user->email_verified_at) && $account->user->email === $email) {
+                        $account->user->email_verified_at = now();
+                        $account->user->save();
+                    }
                     return $account->user;
                 }
 
-                // 2) Try to link by email (if available)
+                // 2) الربط عبر الإيميل إذا موجود
                 $user = null;
                 if ($email) {
                     $user = User::query()->where('email', $email)->first();
                 }
 
-                // 3) Create user if needed
+                // 3) إنشاء User إذا غير موجود
                 if (!$user) {
-                    if (!$email) {
-                        // Without email we cannot create a new user safely
-                        throw new \RuntimeException('Missing email');
-                    }
+                    $resolvedEmail = $email ?: $this->buildPlaceholderEmail($provider, $providerUserId);
 
                     $user = new User();
-                    $user->name = $name ?: $this->fallbackNameFromEmail($email);
-                    $user->email = $email;
+                    $user->name = $name ?: $this->fallbackNameFromEmail($resolvedEmail);
+                    $user->email = $resolvedEmail;
                     $user->password = Hash::make(Str::random(40));
 
-                    if ($emailVerified) {
+                    if ($email && $emailVerified) {
                         $user->email_verified_at = now();
                     }
 
-                    // IMPORTANT: currency stays NULL for social login.
+                    // IMPORTANT: Social login ينشئ user بدون currency
+                    $user->currency = null;
+                    $user->currency_selected_at = null;
+
                     $user->save();
                 } else {
-                    // If existing user has empty name, enrich it
+                    // Enrich name إذا ناقص
                     if (empty($user->name) && $name) {
                         $user->name = $name;
+                    }
+
+                    // Verify email إذا صار verified
+                    if ($email && $emailVerified && empty($user->email_verified_at) && $user->email === $email) {
+                        $user->email_verified_at = now();
+                    }
+
+                    if ($user->isDirty(['name', 'email_verified_at'])) {
                         $user->save();
                     }
                 }
 
-                // 4) Create social account record
+                // 4) إنشاء/تحديث social account
                 SocialAccount::updateOrCreate(
                     [
                         'provider' => $provider,
@@ -196,21 +225,21 @@ class AuthController extends Controller
 
         $token = auth('api')->login($user);
 
+        $emailCompletionRequiredByPolicy = $this->isSocialEmailCompletionRequired();
+        $needsAccountCompletion = $this->isPlaceholderEmail($user->email)
+            && ($emailCompletionRequiredByPolicy || $emailWasMissing);
+
         return $this->ok([
             'token' => $token,
             'tokenType' => 'bearer',
             'expiresIn' => auth('api')->factory()->getTTL() * 60,
             'needsCurrencySelection' => empty($user->currency),
+            'needsAccountCompletion' => $needsAccountCompletion,
+            'accountCompletionPolicy' => [
+                'requireEmail' => $emailCompletionRequiredByPolicy,
+            ],
             'user' => (new UserResource($user))->resolve(request()),
         ]);
-    }
-
-    private function fallbackNameFromEmail(string $email): string
-    {
-        $part = explode('@', $email)[0] ?? 'User';
-        $part = preg_replace('/[^a-zA-Z0-9._-]/', ' ', $part);
-        $part = trim((string) $part);
-        return $part !== '' ? $part : 'User';
     }
 
     public function me()
@@ -218,13 +247,17 @@ class AuthController extends Controller
         return $this->ok(new UserResource(auth('api')->user()));
     }
 
+    /**
+     * Set currency once after login (Popup flow)
+     * Creates wallet if missing
+     */
     public function setCurrency(Request $request)
     {
         $data = $request->validate([
             'currency' => ['required', 'in:TRY,SYP'],
         ]);
 
-        $userId = auth('api')->id();
+        $userId = (int) auth('api')->id();
 
         return DB::transaction(function () use ($userId, $data) {
             $user = User::query()
@@ -236,15 +269,20 @@ class AuthController extends Controller
                 return $this->fail('Currency already set', 409);
             }
 
-            $user->currency = strtoupper($data['currency']);
+            $user->currency = strtoupper((string) $data['currency']);
             $user->currency_selected_at = now();
             $user->save();
 
-            // إنشاء Wallet إذا غير موجود
-            Wallet::firstOrCreate(
+            $wallet = Wallet::firstOrCreate(
                 ['user_id' => $user->id],
                 ['currency' => $user->currency, 'balance_minor' => 0]
             );
+
+            // لو الـ wallet موجودة وعملتها مختلفة (حالات قديمة) سوّيها sync
+            if (!empty($wallet->currency) && $wallet->currency !== $user->currency) {
+                $wallet->currency = $user->currency;
+                $wallet->save();
+            }
 
             return $this->ok(new UserResource($user));
         });
@@ -268,5 +306,36 @@ class AuthController extends Controller
             'needsCurrencySelection' => empty($user->currency),
             'user' => (new UserResource($user))->resolve(request()),
         ]);
+    }
+
+    private function buildPlaceholderEmail(string $provider, string $providerUserId): string
+    {
+        $providerSlug = preg_replace('/[^a-z0-9]/', '', strtolower($provider)) ?: 'social';
+        $userSlug = substr(hash('sha256', strtolower($provider) . '|' . $providerUserId), 0, 32);
+
+        return sprintf('social+%s_%s@social.placeholder.local', $providerSlug, $userSlug);
+    }
+
+    private function isPlaceholderEmail(?string $email): bool
+    {
+        if (!is_string($email) || $email === '') {
+            return false;
+        }
+
+        return str_starts_with($email, 'social+') && str_ends_with($email, '@social.placeholder.local');
+    }
+
+    private function isSocialEmailCompletionRequired(): bool
+    {
+        return (bool) config('auth.social.require_email_completion', true);
+    }
+
+    private function fallbackNameFromEmail(string $email): string
+    {
+        $part = explode('@', $email)[0] ?? 'User';
+        $part = preg_replace('/[^a-zA-Z0-9._-]/', ' ', $part);
+        $part = trim((string) $part);
+
+        return $part !== '' ? $part : 'User';
     }
 }

@@ -117,4 +117,10 @@ return [
 
     'password_timeout' => env('AUTH_PASSWORD_TIMEOUT', 10800),
 
+    'social' => [
+        // Require users created from social login without real email
+        // to complete account data later.
+        'require_email_completion' => env('SOCIAL_REQUIRE_EMAIL_COMPLETION', true),
+    ],
+
 ];
