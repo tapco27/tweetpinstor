@@ -40,6 +40,14 @@ class WalletService
                 abort(409, 'Topup not in a postable state');
             }
 
+            if ((string) ($order->payment_status ?? '') !== 'paid') {
+                abort(422, 'Order is not paid');
+            }
+
+            if ((string) ($order->status ?? '') === 'delivered') {
+                abort(409, 'Cannot refund a delivered order');
+            }
+
             $wallet = Wallet::query()
                 ->whereKey($topup->wallet_id)
                 ->lockForUpdate()
@@ -177,7 +185,15 @@ class WalletService
                     abort(409, 'Order has an active gateway payment intent');
                 }
 
-                $wallet = Wallet::query()
+                if ((string) ($order->payment_status ?? '') !== 'paid') {
+                abort(422, 'Order is not paid');
+            }
+
+            if ((string) ($order->status ?? '') === 'delivered') {
+                abort(409, 'Cannot refund a delivered order');
+            }
+
+            $wallet = Wallet::query()
                     ->where('user_id', $userId)
                     ->lockForUpdate()
                     ->firstOrFail();
@@ -273,15 +289,7 @@ class WalletService
                 abort(422, 'Order is not wallet-paid');
             }
 
-            if ((string) ($order->payment_status ?? '') !== 'paid') {
-                abort(422, 'Order is not paid');
-            }
-
-            if ((string) ($order->status ?? '') === 'delivered') {
-                abort(409, 'Cannot refund a delivered order');
-            }
-
-            // If already refunded, return existing tx
+            // If already refunded (idempotent), return existing tx before state checks
             $existingTx = WalletTransaction::query()
                 ->where('user_id', (int) $order->user_id)
                 ->where('reference_type', 'order')
@@ -290,6 +298,14 @@ class WalletService
                 ->where('type', 'order_refund')
                 ->first();
 
+            if ((string) ($order->payment_status ?? '') !== 'paid') {
+                abort(422, 'Order is not paid');
+            }
+
+            if ((string) ($order->status ?? '') === 'delivered') {
+                abort(409, 'Cannot refund a delivered order');
+            }
+
             $wallet = Wallet::query()
                 ->where('user_id', (int) $order->user_id)
                 ->lockForUpdate()
@@ -297,11 +313,6 @@ class WalletService
 
             if ((string) $wallet->currency !== (string) $order->currency) {
                 abort(500, 'Wallet currency mismatch');
-            }
-
-            if ($existingTx) {
-                $this->markOrderRefunded($order, $adminUserId, $reason);
-                return ['order' => $order, 'transaction' => $existingTx];
             }
 
             $amount = (int) $order->total_amount_minor;
@@ -349,10 +360,13 @@ class WalletService
         try {
             if (class_exists(\App\Models\AuditLog::class)) {
                 \App\Models\AuditLog::create([
+                    'actor_type' => 'App\Models\User',
                     'actor_id' => $adminUserId,
+                    'auditable_type' => 'App\Models\Order',
+                    'auditable_id' => (int) $order->id,
                     'action' => 'order_refund_wallet',
-                    'entity_type' => 'order',
-                    'entity_id' => (int) $order->id,
+                    'old_values' => null,
+                    'new_values' => null,
                     'meta' => [
                         'reason' => $reason,
                         'payment_provider' => (string) ($order->payment_provider ?? ''),

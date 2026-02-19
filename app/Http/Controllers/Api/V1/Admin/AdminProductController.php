@@ -5,8 +5,11 @@ namespace App\Http\Controllers\Api\V1\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\Category;
 use App\Models\Product;
+use App\Models\ProductPackage;
+use App\Models\ProductPrice;
 use App\Models\ProductProviderSlot;
 use Illuminate\Http\Request;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -14,7 +17,8 @@ class AdminProductController extends Controller
 {
     public function index()
     {
-        return Product::query()
+        /** @var LengthAwarePaginator $p */
+        $p = Product::query()
             ->with([
                 'category',
                 'prices.packages',
@@ -23,16 +27,24 @@ class AdminProductController extends Controller
             ])
             ->orderBy('sort_order')
             ->paginate(50);
+
+        $p->setCollection(
+            $p->getCollection()->map(fn (Product $product) => $this->transformCatalogRow($product))
+        );
+
+        return $p;
     }
 
     public function show($id)
     {
-        return Product::with([
+        $product = Product::with([
             'category',
             'prices.packages',
             'eligibleIntegrations',
             'providerSlots.integration',
         ])->findOrFail($id);
+
+        return $this->transformCatalogRow($product, true);
     }
 
     public function store(Request $r)
@@ -50,6 +62,7 @@ class AdminProductController extends Controller
             'is_active' => ['nullable','boolean'],
             'is_featured' => ['nullable','boolean'],
             'sort_order' => ['nullable','integer'],
+            'currency_mode' => ['nullable','in:TRY,USD'],
 
             // fulfillment fields (legacy)
             'fulfillment_type' => ['nullable','string','max:50'],
@@ -93,12 +106,18 @@ class AdminProductController extends Controller
 
             $this->syncProviders($p, $eligible, $slots, true);
 
-            return $p->fresh([
+            // Prevent activating incomplete products
+            $shouldBeActive = array_key_exists('is_active', $data) ? (bool) $data['is_active'] : (bool) $p->is_active;
+            $this->assertProductActivationReadiness($p, $shouldBeActive);
+
+            $p = $p->fresh([
                 'category',
                 'prices.packages',
                 'eligibleIntegrations',
                 'providerSlots.integration',
             ]);
+
+            return $this->transformCatalogRow($p, true);
         });
     }
 
@@ -119,6 +138,7 @@ class AdminProductController extends Controller
             'is_active' => ['sometimes','boolean'],
             'is_featured' => ['sometimes','boolean'],
             'sort_order' => ['sometimes','integer'],
+            'currency_mode' => ['sometimes','in:TRY,USD'],
 
             // legacy fulfillment fields
             'fulfillment_type' => ['sometimes','nullable','string','max:50'],
@@ -169,12 +189,17 @@ class AdminProductController extends Controller
 
             $this->syncProviders($p, $eligible, $slots, false);
 
-            return $p->fresh([
+            $shouldBeActive = array_key_exists('is_active', $data) ? (bool) $data['is_active'] : (bool) $p->is_active;
+            $this->assertProductActivationReadiness($p->fresh(), $shouldBeActive);
+
+            $p = $p->fresh([
                 'category',
                 'prices.packages',
                 'eligibleIntegrations',
                 'providerSlots.integration',
             ]);
+
+            return $this->transformCatalogRow($p, true);
         });
     }
 
@@ -323,5 +348,196 @@ class AdminProductController extends Controller
         if ($isCreate && $slots === null) {
             // optional: do nothing
         }
+    }
+
+    private function assertProductActivationReadiness(Product $product, bool $shouldBeActive): void
+    {
+        if (!$shouldBeActive) {
+            return;
+        }
+
+        if ((string) $product->product_type === 'fixed_package') {
+            $hasActivePackage = ProductPackage::query()
+                ->whereHas('productPrice', function ($q) use ($product) {
+                    $q->where('product_id', (int) $product->id)->where('is_active', true);
+                })
+                ->where('is_active', true)
+                ->exists();
+
+            if (!$hasActivePackage) {
+                throw ValidationException::withMessages([
+                    'is_active' => ['Cannot activate fixed_package product without active packages.'],
+                ]);
+            }
+
+            return;
+        }
+
+        if ((string) $product->product_type === 'flexible_quantity') {
+            $prices = ProductPrice::query()
+                ->where('product_id', (int) $product->id)
+                ->where('is_active', true)
+                ->get();
+
+            if ($prices->isEmpty()) {
+                throw ValidationException::withMessages([
+                    'is_active' => ['Cannot activate flexible_quantity product without active price rows.'],
+                ]);
+            }
+
+            $errors = [];
+            foreach ($prices as $price) {
+                if ($price->min_qty === null || $price->max_qty === null || (int) $price->max_qty < (int) $price->min_qty) {
+                    $errors[] = 'Price row #' . (int) $price->id . ' requires valid min_qty/max_qty.';
+                    continue;
+                }
+
+                $hasDecimal = $price->unit_price_decimal !== null;
+                $hasMinor = ((int) ($price->unit_price_minor ?? 0)) > 0;
+                $isUsdMode = strtoupper((string) ($product->currency_mode ?? 'TRY')) === 'USD';
+                $hasUsdSource = $isUsdMode && (
+                    $price->unit_price_usd !== null
+                    || $product->suggested_unit_usd !== null
+                    || $product->cost_unit_usd !== null
+                );
+
+                if (!$hasDecimal && !$hasMinor && !$hasUsdSource) {
+                    $errors[] = 'Price row #' . (int) $price->id . ' has no valid unit pricing source.';
+                }
+            }
+
+            if (count($errors) > 0) {
+                throw ValidationException::withMessages([
+                    'is_active' => $errors,
+                ]);
+            }
+        }
+    }
+
+    private function transformCatalogRow(Product $product, bool $withRawRelations = false): array
+    {
+        $slotMap = [];
+        foreach ($product->providerSlots as $slot) {
+            $slotNo = (int) ($slot->slot ?? 0);
+            if (!in_array($slotNo, [1, 2], true)) {
+                continue;
+            }
+
+            $slotMap[$slotNo] = [
+                'slot' => $slotNo,
+                'provider_integration_id' => $slot->provider_integration_id,
+                'is_active' => (bool) $slot->is_active,
+                'integration' => $slot->integration ? [
+                    'id' => (int) $slot->integration->id,
+                    'name' => (string) $slot->integration->name,
+                    'template_code' => (string) $slot->integration->template_code,
+                    'type' => (string) ($slot->integration->type ?? ''),
+                    'is_active' => (bool) $slot->integration->is_active,
+                ] : null,
+            ];
+        }
+
+        [$costUsd, $suggestedUsd, $priceSummary] = $this->buildUsdSummary($product);
+
+        $row = [
+            'id' => (int) $product->id,
+            'display_order' => (int) $product->sort_order,
+            'product_type' => (string) $product->product_type,
+            'status' => (bool) $product->is_active ? 'active' : 'inactive',
+            'is_active' => (bool) $product->is_active,
+            'is_featured' => (bool) $product->is_featured,
+            'name' => [
+                'ar' => $product->name_ar,
+                'tr' => $product->name_tr,
+                'en' => $product->name_en,
+            ],
+            'product_name' => (string) ($product->name_ar ?: $product->name_en ?: $product->name_tr ?: ('#'.$product->id)),
+            'category' => $product->category ? [
+                'id' => (int) $product->category->id,
+                'name_ar' => (string) $product->category->name_ar,
+                'name_tr' => (string) ($product->category->name_tr ?? ''),
+                'name_en' => (string) ($product->category->name_en ?? ''),
+            ] : null,
+            'currency_mode' => (string) ($product->currency_mode ?? 'TRY'),
+            'cost_usd' => $costUsd,
+            'suggested_usd' => $suggestedUsd,
+            'price_summary' => $priceSummary,
+            'eligible_providers' => $product->eligibleIntegrations->map(function ($integration) {
+                return [
+                    'id' => (int) $integration->id,
+                    'name' => (string) $integration->name,
+                    'template_code' => (string) $integration->template_code,
+                    'type' => (string) ($integration->type ?? ''),
+                    'is_active' => (bool) $integration->is_active,
+                ];
+            })->values()->all(),
+            'provider_slot_1' => $slotMap[1] ?? null,
+            'provider_slot_2' => $slotMap[2] ?? null,
+            'provider_slots' => [
+                'slot1' => $slotMap[1] ?? null,
+                'slot2' => $slotMap[2] ?? null,
+            ],
+            'created_at' => $product->created_at,
+            'updated_at' => $product->updated_at,
+        ];
+
+        if ($withRawRelations) {
+            $row['raw'] = [
+                'prices' => $product->prices,
+                'provider_slots' => $product->providerSlots,
+            ];
+        }
+
+        return $row;
+    }
+
+    private function buildUsdSummary(Product $product): array
+    {
+        $cost = $product->cost_unit_usd;
+        $suggested = $product->suggested_unit_usd;
+
+        $activePackages = $product->prices
+            ->flatMap(fn ($price) => $price->packages)
+            ->filter(fn ($package) => (bool) $package->is_active)
+            ->values();
+
+        if ($cost === null) {
+            $costValues = $activePackages
+                ->pluck('cost_usd')
+                ->filter(fn ($v) => $v !== null)
+                ->map(fn ($v) => (string) $v)
+                ->unique()
+                ->values();
+
+            if ($costValues->count() === 1) {
+                $cost = $costValues->first();
+            } elseif ($costValues->count() > 1) {
+                $cost = 'varies';
+            }
+        }
+
+        if ($suggested === null) {
+            $suggestedValues = $activePackages
+                ->pluck('suggested_usd')
+                ->filter(fn ($v) => $v !== null)
+                ->map(fn ($v) => (string) $v)
+                ->unique()
+                ->values();
+
+            if ($suggestedValues->count() === 1) {
+                $suggested = $suggestedValues->first();
+            } elseif ($suggestedValues->count() > 1) {
+                $suggested = 'varies';
+            }
+        }
+
+        return [
+            $cost,
+            $suggested,
+            [
+                'cost' => $cost,
+                'suggested' => $suggested,
+            ],
+        ];
     }
 }

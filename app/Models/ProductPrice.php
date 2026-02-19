@@ -11,6 +11,7 @@ class ProductPrice extends Model
   protected $casts = [
     'is_active' => 'boolean',
     'unit_price_usd' => 'string',
+    'unit_price_decimal' => 'string',
   ];
 
   public function product(){ return $this->belongsTo(Product::class); }

@@ -22,6 +22,7 @@ use App\Http\Controllers\Api\V1\Admin\AdminDigitalPinController;
 use App\Http\Controllers\Api\V1\Admin\AdminProviderIntegrationController;
 use App\Http\Controllers\Api\V1\Admin\AdminPriceGroupController;
 use App\Http\Controllers\Api\V1\Admin\AdminTweetPinController;
+use App\Http\Controllers\Api\V1\Admin\AdminProviderProbeController;
 use App\Http\Controllers\Api\V1\Admin\AdminTweetPinMappingController;
 use App\Http\Controllers\Api\V1\Admin\AdminFxRateController;
 use App\Http\Controllers\Api\V1\Admin\AdminUsdPricingController;
@@ -126,6 +127,8 @@ Route::prefix('v1')->group(function () {
         Route::get('/provider-integrations/{id}/tweetpin/products', [AdminTweetPinController::class, 'products']);
         Route::get('/provider-integrations/{id}/tweetpin/content/{parentId}', [AdminTweetPinController::class, 'content']);
         Route::get('/provider-integrations/{id}/tweetpin/check', [AdminTweetPinController::class, 'check']);
+        Route::get('/provider-integrations/{id}/{provider}/profile', [AdminProviderProbeController::class, 'profile']);
+        Route::get('/provider-integrations/{id}/{provider}/products', [AdminProviderProbeController::class, 'products']);
 
         // Phase 7: Tweet-Pin mapping helper
         Route::put('/products/{id}/tweetpin/mapping', [AdminTweetPinMappingController::class, 'update'])->whereNumber('id');
@@ -136,6 +139,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/price-groups/{id}', [AdminPriceGroupController::class, 'show'])->whereNumber('id');
         Route::put('/price-groups/{id}', [AdminPriceGroupController::class, 'update'])->whereNumber('id');
         Route::delete('/price-groups/{id}', [AdminPriceGroupController::class, 'destroy'])->whereNumber('id');
+        Route::post('/price-groups/{id}/set-default', [AdminPriceGroupController::class, 'setDefault'])->whereNumber('id');
 
         // FX Rates + USD Pricing
         Route::get('/fx-rates', [AdminFxRateController::class, 'index']);
@@ -148,6 +152,7 @@ Route::prefix('v1')->group(function () {
         Route::post('/pricing/recalculate-usd', [AdminPricingController::class, 'recalculateUsd']);
         Route::post('/pricing/batch-update-tier', [AdminPricingController::class, 'batchUpdateTier']);
         Route::post('/pricing/batch-update-usd', [AdminPricingController::class, 'batchUpdateUsd']);
+        Route::put('/pricing/row/{type}/{id}', [AdminPricingController::class, 'updateRow'])->whereNumber('id');
 
         // Product Catalog helpers
         Route::put('/products/order', [AdminProductController::class, 'updateOrder']);

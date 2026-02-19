@@ -12,6 +12,7 @@ use App\Models\ProductProviderSlot;
 use App\Models\ProviderIntegration;
 use App\Services\Providers\TweetPinApiClient;
 use App\Support\ProviderTemplates;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 class FulfillmentService
@@ -20,6 +21,7 @@ class FulfillmentService
         private FulfillmentClient $client,
         private DigitalPinsFulfillmentService $digitalPins,
         private TweetPinApiClient $tweetPin,
+        private WalletService $wallets,
     ) {}
 
     public function deliver(Order $order): Delivery
@@ -226,8 +228,26 @@ class FulfillmentService
         ];
         $delivery->save();
 
-        $order->status = 'paid';
+        $order->status = 'failed';
         $order->save();
+
+        // Optional: auto-refund wallet-paid orders on final failure
+        $autoRefund = (bool) config('fulfillment.auto_refund_on_final_failure', false);
+        if ($autoRefund && (string) ($order->payment_provider ?? '') === 'wallet') {
+            try {
+                $result = $this->wallets->refundWalletOrder((int) $order->id, 0, 'auto_refund_on_final_failure');
+                $delivery->payload = array_merge((array) ($delivery->payload ?? []), [
+                    'auto_refunded' => true,
+                    'refund_tx_id' => $result['transaction']->id ?? null,
+                ]);
+                $delivery->save();
+            } catch (\Throwable $e) {
+                Log::warning('fulfillment.auto_refund.failed', [
+                    'order_id' => (int) $order->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
 
         return $delivery;
     }
@@ -351,7 +371,8 @@ class FulfillmentService
         ]);
 
         try {
-            $result = $this->client->post($path, $payload, $headers);
+            $integration = ProviderIntegration::query()->find($integrationId);
+            $result = $this->postViaIntegration($integration, $path, $payload, $headers);
 
             $fr->http_status = $result['http_status'] ?? null;
             $fr->response_payload = $result['json'] ?? ['raw' => ($result['raw'] ?? null)];
@@ -572,7 +593,8 @@ class FulfillmentService
         ]);
 
         try {
-            $result = $this->client->post($path, $payload, $headers);
+            $integration = ProviderIntegration::query()->find($integrationId);
+            $result = $this->postViaIntegration($integration, $path, $payload, $headers);
 
             $fr->http_status = $result['http_status'] ?? null;
             $fr->response_payload = $result['json'] ?? ['raw' => ($result['raw'] ?? null)];
@@ -657,6 +679,79 @@ class FulfillmentService
 
             return $delivery;
         }
+    }
+
+
+    /**
+     * Post using integration-specific base_url and credentials when available.
+     * Falls back to FulfillmentClient config behavior for backward compatibility.
+     */
+    private function postViaIntegration(?ProviderIntegration $integration, string $path, array $payload, array $headers = []): array
+    {
+        if (!$integration) {
+            return $this->client->post($path, $payload, $headers);
+        }
+
+        $creds = $integration->credentials;
+        $meta = $integration->meta;
+
+        $base = '';
+        if (is_array($creds) && !empty($creds['base_url'])) {
+            $base = trim((string) $creds['base_url']);
+        } elseif (is_array($meta) && !empty($meta['base_url'])) {
+            $base = trim((string) $meta['base_url']);
+        }
+
+        if ($base === '') {
+            return $this->client->post($path, $payload, $headers);
+        }
+
+        if (!str_starts_with($base, 'http://') && !str_starts_with($base, 'https://')) {
+            $base = 'https://' . ltrim($base, '/');
+        }
+
+        $url = rtrim($base, '/') . '/' . ltrim($path, '/');
+
+        $timeout = 20;
+        $retries = 1;
+        $http = Http::timeout($timeout)
+            ->retry($retries, 200)
+            ->withHeaders($headers)
+            ->acceptJson();
+
+        if (is_array($creds) && !empty($creds['api_key']) && !array_key_exists('Authorization', $headers)) {
+            $http = $http->withToken((string) $creds['api_key']);
+        }
+
+        if (is_array($creds) && !empty($creds['username']) && !empty($creds['password'])) {
+            $http = $http->withBasicAuth((string) $creds['username'], (string) $creds['password']);
+        }
+
+        try {
+            $resp = $http->asJson()->post($url, $payload);
+        } catch (\Throwable $e) {
+            return [
+                'ok' => false,
+                'http_status' => null,
+                'json' => null,
+                'raw' => null,
+                'provider_request_id' => null,
+                'error' => $e->getMessage(),
+            ];
+        }
+
+        $providerRequestId =
+            $resp->header('X-Request-Id')
+            ?? $resp->header('Request-Id')
+            ?? $resp->header('X-Provider-Request-Id');
+
+        return [
+            'ok' => $resp->successful(),
+            'http_status' => $resp->status(),
+            'json' => $resp->json(),
+            'raw' => $resp->body(),
+            'provider_request_id' => $providerRequestId,
+        ];
     }
 
     /**

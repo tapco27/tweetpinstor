@@ -15,11 +15,13 @@ class AdminPriceGroupController extends Controller
 {
     public function index()
     {
+        $this->ensureDefaultGroupIntegrity();
         return PriceGroup::query()->orderBy('id')->paginate(50);
     }
 
     public function show($id)
     {
+        $this->ensureDefaultGroupIntegrity();
         return PriceGroup::findOrFail($id);
     }
 
@@ -96,6 +98,8 @@ class AdminPriceGroupController extends Controller
                 'adjustment' => $adjustment,
             ]);
 
+            $this->ensureDefaultGroupIntegrity();
+
             return $pg;
         });
     }
@@ -104,15 +108,17 @@ class AdminPriceGroupController extends Controller
     {
         $pg = PriceGroup::findOrFail($id);
 
-        if ((int) $pg->id === PriceGroup::DEFAULT_ID && $r->has('is_default')) {
-            throw ValidationException::withMessages(['is_default' => ['Default group is fixed.']]);
-        }
-
         $data = $r->validate([
             'name' => ['sometimes','string','max:100'],
             'code' => ['sometimes','string','max:50','alpha_dash','unique:price_groups,code,' . (int) $pg->id],
             'is_active' => ['sometimes','boolean'],
         ]);
+
+        if (array_key_exists('is_active', $data) && !$data['is_active'] && (bool) $pg->is_default) {
+            throw ValidationException::withMessages([
+                'is_active' => ['Cannot deactivate default price group before assigning a new default'],
+            ]);
+        }
 
         $old = $pg->toArray();
         $pg->update($data);
@@ -133,18 +139,72 @@ class AdminPriceGroupController extends Controller
     {
         $pg = PriceGroup::findOrFail($id);
 
-        if ((int) $pg->id === PriceGroup::DEFAULT_ID) {
-            return response()->json([
-                'message' => 'Cannot delete default price group',
-            ], 422);
-        }
+        $data = request()->validate([
+            'new_default_id' => ['nullable', 'integer', 'different:id', 'exists:price_groups,id'],
+        ]);
 
-        $pg->is_active = false;
-        $pg->save();
+        return DB::transaction(function () use ($pg, $data) {
+            if ((bool) $pg->is_default) {
+                $newDefaultId = isset($data['new_default_id']) ? (int) $data['new_default_id'] : null;
+                if (!$newDefaultId) {
+                    return response()->json([
+                        'message' => 'Cannot deactivate default price group before assigning a new default',
+                    ], 422);
+                }
 
-        $this->audit('price_group_deactivate', (int) $pg->id);
+                $candidate = PriceGroup::query()->whereKey($newDefaultId)->lockForUpdate()->firstOrFail();
+                if (!(bool) $candidate->is_active) {
+                    return response()->json([
+                        'message' => 'new_default_id must point to an active price group',
+                    ], 422);
+                }
 
-        return response()->json(['message' => 'Deactivated']);
+                PriceGroup::query()->where('is_default', true)->update(['is_default' => false]);
+                $candidate->is_default = true;
+                $candidate->save();
+            }
+
+            $pg->is_active = false;
+            $pg->is_default = false;
+            $pg->save();
+
+            $this->ensureDefaultGroupIntegrity();
+
+            $this->audit('price_group_deactivate', (int) $pg->id, [
+                'new_default_id' => $data['new_default_id'] ?? null,
+            ]);
+
+            return response()->json(['message' => 'Deactivated']);
+        });
+    }
+
+    /**
+     * POST /admin/price-groups/{id}/set-default
+     */
+    public function setDefault($id)
+    {
+        return DB::transaction(function () use ($id) {
+            $pg = PriceGroup::query()->whereKey((int) $id)->lockForUpdate()->firstOrFail();
+
+            if (!(bool) $pg->is_active) {
+                return response()->json([
+                    'message' => 'Cannot set inactive price group as default',
+                ], 422);
+            }
+
+            $oldDefaultId = PriceGroup::query()->where('is_default', true)->value('id');
+
+            PriceGroup::query()->where('is_default', true)->update(['is_default' => false]);
+            $pg->is_default = true;
+            $pg->save();
+
+            $this->audit('price_group_set_default', (int) $pg->id, [
+                'old_default_id' => $oldDefaultId,
+                'new_default_id' => (int) $pg->id,
+            ]);
+
+            return $pg;
+        });
     }
 
     private function clonePricesFromGroup(int $fromGroupId, int $toGroupId, ?array $adjustment = null): void
@@ -218,14 +278,54 @@ class AdminPriceGroupController extends Controller
             $actorId = auth('api')->id();
 
             AuditLog::create([
+                'actor_type' => $actorId ? 'App\Models\User' : null,
                 'actor_id' => $actorId,
+                'auditable_type' => 'App\Models\PriceGroup',
+                'auditable_id' => $entityId,
                 'action' => $action,
-                'entity_type' => 'price_group',
-                'entity_id' => $entityId,
+                'old_values' => null,
+                'new_values' => null,
                 'meta' => $meta,
             ]);
         } catch (\Throwable $e) {
             // ignore
+        }
+    }
+
+    /**
+     * Data-healing safety for historical bad data:
+     * - if no default exists, pick first active group by id
+     * - ensure default is always active
+     */
+    private function ensureDefaultGroupIntegrity(): void
+    {
+        try {
+            $default = PriceGroup::query()->where('is_default', true)->orderBy('id')->first();
+
+            if ($default) {
+                if (!(bool) $default->is_active) {
+                    $fallback = PriceGroup::query()
+                        ->where('is_active', true)
+                        ->where('id', '!=', (int) $default->id)
+                        ->orderBy('id')
+                        ->first();
+
+                    if ($fallback) {
+                        PriceGroup::query()->where('is_default', true)->update(['is_default' => false]);
+                        $fallback->is_default = true;
+                        $fallback->save();
+                    }
+                }
+                return;
+            }
+
+            $fallback = PriceGroup::query()->where('is_active', true)->orderBy('id')->first();
+            if ($fallback) {
+                $fallback->is_default = true;
+                $fallback->save();
+            }
+        } catch (\Throwable $e) {
+            // non-blocking safeguard
         }
     }
 }

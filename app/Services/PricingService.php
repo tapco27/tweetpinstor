@@ -24,13 +24,27 @@ class PricingService
     if ($price->min_qty !== null && $quantity < $price->min_qty) throw new \InvalidArgumentException('Quantity below min');
     if ($price->max_qty !== null && $quantity > $price->max_qty) throw new \InvalidArgumentException('Quantity above max');
 
-    // ✅ USD-based flexible products: compute total from USD to avoid "unit price rounds to 0" issues.
+    // ✅ Highest precision path for flexible_quantity: use unit_price_decimal when available.
+    $minorUnit = (int) ($price->minor_unit ?? (int) config('money.minor_units.' . strtoupper((string) $price->currency), 2));
+    $scale = $minorUnit > 0 ? (10 ** $minorUnit) : 1;
+
+    if ($price->unit_price_decimal !== null) {
+      $unitDecimal = (float) $price->unit_price_decimal;
+      $unitMinor = (int) round($unitDecimal * $scale);
+      $totalMinor = (int) round($unitDecimal * $quantity * $scale);
+
+      if ($totalMinor < 0) {
+        throw new \InvalidArgumentException('Invalid total price');
+      }
+
+      return ['unit_price_minor' => max(0, $unitMinor), 'quantity' => $quantity, 'total_price_minor' => max(0, $totalMinor)];
+    }
+
+    // ✅ USD-based fallback for products in USD mode.
     if ((string) ($product->currency_mode ?? 'TRY') === 'USD') {
       $usdUnit = $price->unit_price_usd ?? $product->suggested_unit_usd;
       if ($usdUnit !== null) {
         $fx = $this->fxRateOrFail((string) $price->currency);
-        $minorUnit = (int) ($price->minor_unit ?? (int) config('money.minor_units.' . strtoupper((string) $price->currency), 2));
-        $scale = $minorUnit > 0 ? (10 ** $minorUnit) : 1;
 
         $unitMinor = (int) round(((float) $usdUnit) * $fx * $scale);
         $totalMinor = (int) round(((float) $usdUnit) * $fx * $scale * $quantity);
@@ -38,7 +52,7 @@ class PricingService
           throw new \InvalidArgumentException('Invalid total price');
         }
 
-        return ['unit_price_minor' => $unitMinor, 'quantity' => $quantity, 'total_price_minor' => $totalMinor];
+        return ['unit_price_minor' => max(0, $unitMinor), 'quantity' => $quantity, 'total_price_minor' => max(0, $totalMinor)];
       }
       // If USD mode but USD unit price missing: fall back to stored unit_price_minor (if any)
     }

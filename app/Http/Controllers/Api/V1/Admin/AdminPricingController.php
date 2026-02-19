@@ -126,10 +126,20 @@ class AdminPricingController extends Controller
                         $minorUnit = $this->resolveMinorUnit($price->minor_unit, $currency);
                         $scale = 10 ** $minorUnit;
 
-                        $newMinor = (int) round(((float) $usd) * ((float) $fx) * $scale);
+                        $newDecimal = round(((float) $usd) * ((float) $fx), 10);
+                        $newMinor = (int) round($newDecimal * $scale);
 
+                        $dirty = false;
+                        if ((string) ($price->unit_price_decimal ?? '') !== (string) $newDecimal) {
+                            $price->unit_price_decimal = $newDecimal;
+                            $dirty = true;
+                        }
                         if ((int) $price->unit_price_minor !== $newMinor) {
                             $price->unit_price_minor = max(0, $newMinor);
+                            $dirty = true;
+                        }
+
+                        if ($dirty) {
                             $price->save();
                             $affected++;
                         }
@@ -385,6 +395,121 @@ class AdminPricingController extends Controller
         return response()->json(
             $this->payload($this->snapshotByIds($data['target'], $ids), $affected, $errors)
         );
+    }
+
+
+    public function updateRow(Request $request, string $type, int $id)
+    {
+        $type = strtolower(trim($type));
+
+        if (!in_array($type, ['product', 'package'], true)) {
+            return response()->json([
+                'message' => 'Invalid row type. Allowed: product, package',
+            ], 422);
+        }
+
+        $data = $request->validate([
+            'cost_usd' => ['nullable', 'numeric', 'min:0'],
+            'suggested_usd' => ['nullable', 'numeric', 'min:0'],
+            'tier_prices' => ['nullable', 'array', 'max:100'],
+            'tier_prices.*' => ['nullable', 'integer', 'min:0'],
+            'tier_unit_price_decimal' => ['nullable', 'array', 'max:100'],
+            'tier_unit_price_decimal.*' => ['nullable', 'numeric', 'min:0'],
+        ]);
+
+        $affected = 0;
+
+        DB::transaction(function () use ($type, $id, $data, &$affected) {
+            if ($type === 'product') {
+                $product = Product::query()->findOrFail($id);
+
+                if (array_key_exists('cost_usd', $data)) {
+                    $product->cost_unit_usd = $data['cost_usd'];
+                }
+                if (array_key_exists('suggested_usd', $data)) {
+                    $product->suggested_unit_usd = $data['suggested_usd'];
+                }
+
+                if ($product->isDirty()) {
+                    $product->save();
+                    $affected++;
+                }
+
+                if (!empty($data['tier_prices']) || !empty($data['tier_unit_price_decimal'])) {
+                    $prices = ProductPrice::query()
+                        ->where('product_id', (int) $product->id)
+                        ->get()
+                        ->keyBy(fn ($r) => (string) $r->price_group_id);
+
+                    foreach (($data['tier_prices'] ?? []) as $groupId => $minor) {
+                        $row = $prices->get((string) $groupId);
+                        if (!$row) continue;
+                        $new = (int) $minor;
+                        if ((int) $row->unit_price_minor !== $new) {
+                            $row->unit_price_minor = $new;
+                            $row->save();
+                            $affected++;
+                        }
+                    }
+
+                    foreach (($data['tier_unit_price_decimal'] ?? []) as $groupId => $decimal) {
+                        $row = $prices->get((string) $groupId);
+                        if (!$row) continue;
+                        $new = $decimal === null ? null : round((float) $decimal, 10);
+                        if ((string) ($row->unit_price_decimal ?? '') !== (string) ($new ?? '')) {
+                            $row->unit_price_decimal = $new;
+                            $row->save();
+                            $affected++;
+                        }
+                    }
+                }
+            } else {
+                $package = ProductPackage::query()->with('productPrice')->findOrFail($id);
+
+                if (array_key_exists('cost_usd', $data)) {
+                    $package->cost_usd = $data['cost_usd'];
+                }
+                if (array_key_exists('suggested_usd', $data)) {
+                    $package->suggested_usd = $data['suggested_usd'];
+                }
+
+                if ($package->isDirty()) {
+                    $package->save();
+                    $affected++;
+                }
+
+                if (!empty($data['tier_prices'])) {
+                    $productId = (int) ($package->productPrice?->product_id ?? 0);
+                    if ($productId > 0) {
+                        foreach ($data['tier_prices'] as $groupId => $minor) {
+                            $pp = ProductPrice::query()
+                                ->where('product_id', $productId)
+                                ->where('price_group_id', (int) $groupId)
+                                ->first();
+                            if (!$pp) continue;
+
+                            $pkgTier = ProductPackage::query()
+                                ->where('product_price_id', (int) $pp->id)
+                                ->where('value_label', (string) $package->value_label)
+                                ->first();
+                            if (!$pkgTier) continue;
+
+                            $new = (int) $minor;
+                            if ((int) $pkgTier->price_minor !== $new) {
+                                $pkgTier->price_minor = $new;
+                                $pkgTier->save();
+                                $affected++;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        return response()->json($this->payload([
+            'row' => ['type' => $type, 'id' => $id],
+            'snapshot' => $this->snapshotByIds($type === 'product' ? 'product' : 'package', [$id]),
+        ], $affected, []));
     }
 
     private function resolveMinorUnit($minorUnit, string $currency): int
